@@ -85,6 +85,34 @@ Authorization: Bearer <your-jwt-token>
 #### GET `/verify`
 Проверка токена. Требует авторизации.
 
+#### POST `/change-password`
+Смена пароля пользователя. Требует авторизации.
+
+**Тело запроса:**
+```json
+{
+  "currentPassword": "OldPassword123",
+  "newPassword": "NewSecurePass456"
+}
+```
+
+**Параметры:**
+- `currentPassword` (string, обязательное) - текущий пароль пользователя
+- `newPassword` (string, обязательное) - новый пароль (должен соответствовать требованиям валидации)
+
+**Ответ:**
+```json
+{
+  "message": "Password changed successfully"
+}
+```
+
+**Ошибки:**
+- `400` - Неверный текущий пароль или ошибки валидации
+- `401` - Не авторизован
+- `404` - Пользователь не найден
+- `500` - Ошибка сервера при смене пароля
+
 ### 👤 Профиль пользователя (`/api/profile`)
 
 Все маршруты требуют авторизации.
@@ -170,6 +198,45 @@ Authorization: Bearer <your-jwt-token>
 #### DELETE `/documents/:documentId`
 Удаление документа.
 
+#### PUT `/auth-method`
+Изменение метода авторизации пользователя.
+
+**Тело запроса:**
+```json
+{
+  "authMethod": "sms"
+}
+```
+
+**Параметры:**
+- `authMethod` (string, обязательное) - метод авторизации. Возможные значения:
+  - `"sms"` - авторизация по SMS-коду
+  - `"password"` - авторизация по паролю
+
+**Ответ:**
+```json
+{
+  "message": "Authentication method changed successfully",
+  "user": {
+    "id": 1,
+    "email": "user@example.com",
+    "firstName": "Иван",
+    "lastName": "Иванов",
+    "middleName": "Иванович",
+    "phone": "+7 (999) 123-45-67",
+    "isActive": true,
+    "isVerified": false,
+    "authMethod": "sms",
+    "createdAt": "2024-01-01T00:00:00.000Z",
+    "updatedAt": "2024-01-01T00:00:00.000Z"
+  }
+}
+```
+
+**Ошибки:**
+- `400` - Неверный метод авторизации
+- `500` - Ошибка сервера при изменении метода
+
 ### 💰 Счета (`/api/accounts`)
 
 Все маршруты требуют авторизации.
@@ -253,9 +320,9 @@ Authorization: Bearer <your-jwt-token>
 - `bank` (string) - название банка
 - `bik_or_bankname` (string) - БИК банка или название банка
 - `currency` (string) - валюта счета (по умолчанию "RUB")
+- `number` (string) - номер банковской карты или счета
 
 **Опциональные поля:**
-- `number` (string) - номер банковской карты или счета
 - `bankname` (string) - полное название банка
 - `inn` (string) - ИНН банка (10 или 12 цифр)
 - `kpp` (string) - КПП банка (9 цифр)
@@ -349,8 +416,8 @@ Authorization: Bearer <your-jwt-token>
   "amount": 10000,
   "recipientDetails": {
     "bankName": "Сбербанк",
-    "accountNumber": "40817810123456789012",
-    "bik": "044525225"
+    "number": "40817810123456789012",
+    "account_number": "PI0000000501"
   },
   "comment": "Вывод средств"
 }
@@ -626,6 +693,314 @@ curl -X POST http://localhost:5000/api/accounts \
   "errors": [
     "INN must be 10 or 12 digits"
   ]
+}
+```
+
+## Админские операции
+
+### GET /api/admin/operations
+Получение всех операций (только для администраторов)
+
+**Параметры запроса:**
+- `page` (number, optional): Номер страницы (по умолчанию 1)
+- `limit` (number, optional): Количество записей на странице (по умолчанию 20)
+- `status` (string, optional): Фильтр по статусу (created, processing, completed, rejected)
+- `type` (string, optional): Фильтр по типу операции (deposit, withdrawal)
+- `userId` (number, optional): Фильтр по ID пользователя
+
+**Ответ:**
+```json
+{
+  "operations": [
+    {
+      "id": 1,
+      "operation_type": "deposit",
+      "amount": "1000.00",
+      "currency": "RUB",
+      "status": "created",
+      "comment": "Пополнение счета",
+      "admin_comment": null,
+      "recipient_details": {...},
+      "contact_method": "email",
+      "created_at": "2024-01-01T10:00:00Z",
+      "updated_at": "2024-01-01T10:00:00Z",
+      "account_number": "PI0000000501",
+      "first_name": "Иван",
+      "last_name": "Иванов",
+      "email": "ivan@example.com"
+    }
+  ],
+  "pagination": {
+    "page": 1,
+    "limit": 20,
+    "total": 100,
+    "pages": 5
+  }
+}
+```
+
+### PUT /api/admin/operations/:operationId/status
+Обновление статуса операции (только для администраторов)
+
+**Параметры запроса:**
+- `status` (string, required): Новый статус (created, processing, completed, rejected)
+- `adminComment` (string, optional): Комментарий администратора
+
+**Ответ:**
+```json
+{
+  "message": "Operation status updated successfully",
+  "operation": {
+    "id": 1,
+    "status": "completed",
+    "admin_comment": "Операция выполнена успешно"
+  }
+}
+```
+
+### POST /api/admin/operations/:operationId/process-deposit
+Начисление средств по операции пополнения (только для администраторов)
+
+**Параметры запроса:**
+- `amount` (number, required): Сумма для начисления (должна быть положительным числом)
+- `adminComment` (string, optional): Комментарий администратора
+
+**Ответ:**
+```json
+{
+  "message": "Deposit processed successfully",
+  "operation": {
+    "id": 1,
+    "status": "completed",
+    "amount": "1000.00",
+    "newBalance": "1500.00"
+  }
+}
+```
+
+### GET /api/admin/stats
+Получение статистики для администратора
+
+**Ответ:**
+```json
+{
+  "operations": {
+    "total_operations": 150,
+    "pending_operations": 5,
+    "processing_operations": 10,
+    "completed_operations": 130,
+    "rejected_operations": 5,
+    "total_deposits": "50000.00",
+    "total_withdrawals": "30000.00"
+  },
+  "users": {
+    "total_users": 25,
+    "active_users": 20,
+    "new_users_30_days": 5
+  },
+  "accounts": {
+    "total_accounts": 30,
+    "total_balance": "200000.00",
+    "avg_balance": "6666.67"
+  },
+  "recentOperations": [
+    {
+      "date": "2024-01-01",
+      "operations_count": 10,
+      "deposits": "5000.00",
+      "withdrawals": "2000.00"
+    }
+  ]
+}
+```
+
+### GET /api/admin/users
+Получение всех пользователей (только для администраторов)
+
+**Параметры запроса:**
+- `page` (number, optional): Номер страницы (по умолчанию 1)
+- `limit` (number, optional): Количество записей на странице (по умолчанию 20)
+- `search` (string, optional): Поиск по имени, фамилии или email
+
+**Ответ:**
+```json
+{
+  "users": [
+    {
+      "id": 1,
+      "email": "ivan@example.com",
+      "first_name": "Иван",
+      "last_name": "Иванов",
+      "middle_name": "Иванович",
+      "phone": "+7 (999) 123-45-67",
+      "is_active": true,
+      "is_verified": true,
+      "created_at": "2024-01-01T10:00:00Z",
+      "accounts_count": 2,
+      "total_balance": "5000.00"
+    }
+  ],
+  "pagination": {
+    "page": 1,
+    "limit": 20,
+    "total": 25,
+    "pages": 2
+  }
+}
+```
+
+### PUT /api/admin/users/:userId/status
+Блокировка/разблокировка пользователя (только для администраторов)
+
+**Параметры запроса:**
+- `isActive` (boolean, required): Новый статус активности
+
+**Ответ:**
+```json
+{
+  "message": "User activated successfully",
+  "user": {
+    "id": 1,
+    "email": "ivan@example.com",
+    "first_name": "Иван",
+    "last_name": "Иванов",
+    "is_active": true
+  }
+}
+```
+
+### GET /api/admin/users/:userId/details
+Получение детальной информации о пользователе (только для администраторов)
+
+**Ответ:**
+```json
+{
+  "user": {
+    "id": 1,
+    "email": "ivan@example.com",
+    "first_name": "Иван",
+    "last_name": "Иванов",
+    "middle_name": "Иванович",
+    "phone": "+7 (999) 123-45-67",
+    "is_active": true,
+    "is_verified": true,
+    "created_at": "2024-01-01T10:00:00Z"
+  },
+  "accounts": [
+    {
+      "id": 1,
+      "account_number": "PI0000000501",
+      "balance": "5000.00",
+      "currency": "RUB",
+      "is_active": true,
+      "created_at": "2024-01-01T10:00:00Z"
+    }
+  ],
+  "recentOperations": [
+    {
+      "id": 1,
+      "operation_type": "deposit",
+      "amount": "1000.00",
+      "status": "completed",
+      "created_at": "2024-01-01T10:00:00Z",
+      "account_number": "PI0000000501"
+    }
+  ]
+}
+```
+
+### GET /api/admin/accounts
+Получение всех счетов (только для администраторов)
+
+**Параметры запроса:**
+- `page` (number, optional): Номер страницы (по умолчанию 1)
+- `limit` (number, optional): Количество записей на странице (по умолчанию 20)
+- `userId` (number, optional): Фильтр по ID пользователя
+- `currency` (string, optional): Фильтр по валюте (RUB, USD, EUR, CNY)
+- `isActive` (boolean, optional): Фильтр по статусу активности
+
+**Ответ:**
+```json
+{
+  "accounts": [
+    {
+      "id": 1,
+      "account_number": "PI0000000501",
+      "balance": "5000.00",
+      "currency": "RUB",
+      "is_active": true,
+      "bank": "Сбербанк",
+      "number": "40817810123456789012",
+      "created_at": "2024-01-01T10:00:00Z",
+      "updated_at": "2024-01-01T10:00:00Z",
+      "first_name": "Иван",
+      "last_name": "Иванов",
+      "email": "ivan@example.com"
+    }
+  ],
+  "pagination": {
+    "page": 1,
+    "limit": 20,
+    "total": 30,
+    "pages": 2
+  }
+}
+```
+
+### PUT /api/admin/accounts/:accountId/status
+Блокировка/разблокировка счета (только для администраторов)
+
+**Параметры запроса:**
+- `isActive` (boolean, required): Новый статус активности
+
+**Ответ:**
+```json
+{
+  "message": "Account activated successfully",
+  "account": {
+    "id": 1,
+    "account_number": "PI0000000501",
+    "is_active": true
+  }
+}
+```
+
+### PUT /api/admin/accounts/:accountId/balance
+Обновление баланса счета (только для администраторов)
+
+**Параметры запроса:**
+- `newBalance` (number, required): Новый баланс счета
+- `comment` (string, optional): Комментарий к изменению
+
+**Ответ:**
+```json
+{
+  "message": "Account balance updated successfully",
+  "account": {
+    "id": 1,
+    "account_number": "PI0000000501",
+    "balance": "6000.00",
+    "currency": "RUB"
+  },
+  "oldBalance": "5000.00",
+  "newBalance": "6000.00"
+}
+```
+
+### PUT /api/admin/accounts/:accountId/percentage
+Обновление процента счета (только для администраторов)
+
+**Параметры запроса:**
+- `percentage` (number, required): Новый процент счета (должен быть неотрицательным числом)
+
+**Ответ:**
+```json
+{
+  "message": "Account percentage updated successfully",
+  "account": {
+    "id": 1,
+    "percentage": 5.5
+  }
 }
 ```
 

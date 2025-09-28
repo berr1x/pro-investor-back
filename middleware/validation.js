@@ -133,38 +133,18 @@ const validatePassportData = [
 
 // Валидация операций
 const validateDeposit = [
-  body('amount')
-    .isFloat({ min: 1000 })
-    .withMessage('Minimum deposit amount is 1000 RUB'),
   body('comment')
     .optional()
     .trim()
     .isLength({ max: 500 })
     .withMessage('Comment must not exceed 500 characters'),
-  body('contactMethod')
-    .optional()
-    .isIn(['email', 'phone', 'telegram'])
-    .withMessage('Contact method must be email, phone, or telegram'),
   handleValidationErrors
 ];
 
 const validateWithdrawal = [
-  body('amount')
-    .isFloat({ min: 1000 })
-    .withMessage('Minimum withdrawal amount is 1000 RUB'),
   body('recipientDetails')
     .isObject()
     .withMessage('Recipient details are required'),
-  body('recipientDetails.bankName')
-    .notEmpty()
-    .withMessage('Bank name is required'),
-  body('recipientDetails.accountNumber')
-    .notEmpty()
-    .withMessage('Account number is required'),
-  body('recipientDetails.bik')
-    .optional()
-    .isLength({ min: 9, max: 9 })
-    .withMessage('BIK must be 9 digits'),
   body('comment')
     .optional()
     .trim()

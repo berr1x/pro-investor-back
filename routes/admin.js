@@ -13,6 +13,9 @@ router.get('/operations', adminController.getAllOperations);
 // Обновление статуса операции
 router.put('/operations/:operationId/status', adminController.updateOperationStatus);
 
+// Начисление средств по операции пополнения
+router.post('/operations/:operationId/process-deposit', adminController.processDeposit);
+
 // Получение статистики
 router.get('/stats', adminController.getAdminStats);
 
@@ -21,5 +24,20 @@ router.get('/users', adminController.getAllUsers);
 
 // Блокировка/разблокировка пользователя
 router.put('/users/:userId/status', adminController.toggleUserStatus);
+
+// Получение детальной информации о пользователе
+router.get('/users/:userId/details', adminController.getUserDetails);
+
+// Получение всех счетов
+router.get('/accounts', adminController.getAllAccounts);
+
+// Блокировка/разблокировка счета
+router.put('/accounts/:accountId/status', adminController.toggleAccountStatus);
+
+// Обновление баланса счета
+router.put('/accounts/:accountId/balance', adminController.updateAccountBalance);
+
+// Обновление процента счета
+router.put('/accounts/:accountId/percentage', adminController.updateAccountPercentage);
 
 module.exports = router;

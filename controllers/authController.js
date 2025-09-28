@@ -93,7 +93,7 @@ const login = async (req, res) => {
   try {
     // Находим пользователя
     const result = await pool.query(
-      'SELECT id, email, password_hash, first_name, last_name, middle_name, is_active, auth_method FROM users WHERE email = $1 OR phone = $2',
+      'SELECT id, email, password_hash, first_name, last_name, middle_name, is_active, auth_method, is_verified FROM users WHERE email = $1 OR phone = $2',
       [email, phone]
     );
 
@@ -131,7 +131,8 @@ const login = async (req, res) => {
         lastName: user.last_name,
         middleName: user.middle_name,
         phone: user.phone,
-        authMethod: user.auth_method
+        authMethod: user.auth_method,
+        is_verified: user.is_verified
       },
       token
     });

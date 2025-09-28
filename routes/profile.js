@@ -28,4 +28,7 @@ router.get('/documents', profileController.getDocuments);
 // Удаление документа
 router.delete('/documents/:documentId', profileController.deleteDocument);
 
+// Изменение метода авторизации
+router.put('/auth-method', profileController.changeAuthMethod);
+
 module.exports = router;

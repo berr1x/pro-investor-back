@@ -8,7 +8,7 @@ const getProfile = async (req, res) => {
     // Получаем основную информацию о пользователе
     const userResult = await pool.query(
       `SELECT id, email, first_name, last_name, middle_name, phone, 
-              is_active, is_verified, created_at, updated_at
+              is_active, is_verified, created_at, updated_at, auth_method
        FROM users WHERE id = $1`,
       [userId]
     );
@@ -48,7 +48,8 @@ const getProfile = async (req, res) => {
         isActive: user.is_active,
         isVerified: user.is_verified,
         createdAt: user.created_at,
-        updatedAt: user.updated_at
+        updatedAt: user.updated_at,
+        authMethod: user.auth_method
       },
       passport: passportResult.rows[0] || null,
       documents: documentsResult.rows,
@@ -92,7 +93,8 @@ const updateProfile = async (req, res) => {
         lastName: result.rows[0].last_name,
         middleName: result.rows[0].middle_name,
         phone: result.rows[0].phone,
-        updatedAt: result.rows[0].updated_at
+        updatedAt: result.rows[0].updated_at,
+        authMethod: result.rows[0].auth_method
       }
     });
 
@@ -233,11 +235,34 @@ const deleteDocument = async (req, res) => {
   }
 };
 
+// Изменение метода авторизации
+const changeAuthMethod = async (req, res) => {
+  const userId = req.user.id;
+  const { authMethod } = req.body; // 'sms' or 'password'
+  
+  try {
+    const result = await pool.query(
+      'UPDATE users SET auth_method = $1 WHERE id = $2 RETURNING *',
+      [authMethod, userId]
+    );
+    
+    res.json({
+      message: 'Authentication method changed successfully',
+      user: result.rows[0]
+    });
+
+  } catch (error) {
+    console.error('Change auth method error:', error);
+    res.status(500).json({ message: 'Failed to change authentication method' });
+  }
+};
+
 module.exports = {
   getProfile,
   updateProfile,
   updatePassport,
   uploadDocument,
   getDocuments,
-  deleteDocument
+  deleteDocument,
+  changeAuthMethod
 };

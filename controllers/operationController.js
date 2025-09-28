@@ -4,7 +4,7 @@ const emailService = require('../utils/emailService');
 // Создание заявки на пополнение
 const createDeposit = async (req, res) => {
   const userId = req.user.id;
-  const { amount, comment, contactMethod } = req.body;
+  const { amount, currency, comment, recipientDetails } = req.body;
 
   try {
     // Получаем основной счет пользователя
@@ -19,12 +19,12 @@ const createDeposit = async (req, res) => {
 
     const accountId = accountResult.rows[0].id;
 
-    // Создаем операцию
+    // Создаем операцию с новыми полями
     const operationResult = await pool.query(
-      `INSERT INTO operations (user_id, account_id, operation_type, amount, comment, contact_method, status)
-       VALUES ($1, $2, 'deposit', $3, $4, $5, 'created')
+      `INSERT INTO operations (user_id, account_id, operation_type, amount, currency, comment, recipient_details, status)
+       VALUES ($1, $2, 'deposit', $3, $4, $5, $6, 'created')
        RETURNING *`,
-      [userId, accountId, amount, comment, contactMethod]
+      [userId, accountId, amount, currency, comment, JSON.stringify(recipientDetails)]
     );
 
     const operation = operationResult.rows[0];
@@ -39,34 +39,35 @@ const createDeposit = async (req, res) => {
     const userName = `${user.first_name} ${user.last_name}`;
 
     // Отправляем уведомление администратору
-    try {
-      await emailService.sendAdminNotification(
-        'deposit',
-        amount,
-        user.email,
-        userName,
-        {
-          comment,
-          contactMethod,
-          operationId: operation.id
-        }
-      );
-    } catch (emailError) {
-      console.error('Failed to send admin notification:', emailError);
-    }
+    // try {
+    //   await emailService.sendAdminNotification(
+    //     'deposit',
+    //     amount,
+    //     user.email,
+    //     userName,
+    //     {
+    //       comment,
+    //       currency,
+    //       recipientDetails,
+    //       operationId: operation.id
+    //     }
+    //   );
+    // } catch (emailError) {
+    //   console.error('Failed to send admin notification:', emailError);
+    // }
 
     // Отправляем уведомление пользователю
-    try {
-      await emailService.sendOperationNotification(
-        user.email,
-        user.first_name,
-        'deposit',
-        amount,
-        'created'
-      );
-    } catch (emailError) {
-      console.error('Failed to send user notification:', emailError);
-    }
+    // try {
+    //   await emailService.sendOperationNotification(
+    //     user.email,
+    //     user.first_name,
+    //     'deposit',
+    //     amount,
+    //     'created'
+    //   );
+    // } catch (emailError) {
+    //   console.error('Failed to send user notification:', emailError);
+    // }
 
     res.status(201).json({
       message: 'Deposit request created successfully',
@@ -74,9 +75,10 @@ const createDeposit = async (req, res) => {
         id: operation.id,
         type: operation.operation_type,
         amount: operation.amount,
+        currency: operation.currency,
         status: operation.status,
         comment: operation.comment,
-        contactMethod: operation.contact_method,
+        recipientDetails: operation.recipient_details,
         createdAt: operation.created_at
       }
     });
@@ -93,84 +95,116 @@ const createWithdrawal = async (req, res) => {
   const { amount, recipientDetails, comment } = req.body;
 
   try {
-    // Получаем основной счет пользователя
+    // Проверяем, что передан номер счета для списания
+    if (!recipientDetails || !recipientDetails.account_number) {
+      return res.status(400).json({ message: 'Account number is required for withdrawal' });
+    }
+
+    // Получаем конкретный счет пользователя по номеру
     const accountResult = await pool.query(
-      'SELECT id, balance FROM user_accounts WHERE user_id = $1 AND is_active = true ORDER BY created_at ASC LIMIT 1',
-      [userId]
+      'SELECT id, balance, account_number FROM user_accounts WHERE user_id = $1 AND account_number = $2 AND is_active = true',
+      [userId, recipientDetails.account_number]
     );
 
     if (accountResult.rows.length === 0) {
-      return res.status(400).json({ message: 'No active account found' });
+      return res.status(400).json({ message: 'Account not found or inactive' });
     }
 
     const account = accountResult.rows[0];
 
-    // Проверяем достаточность средств
+    // Проверяем достаточность средств на указанном счете
     if (parseFloat(account.balance) < parseFloat(amount)) {
-      return res.status(400).json({ message: 'Insufficient funds' });
+      return res.status(400).json({ 
+        message: 'Insufficient funds', 
+        currentBalance: account.balance,
+        requestedAmount: amount 
+      });
     }
 
-    // Создаем операцию
-    const operationResult = await pool.query(
-      `INSERT INTO operations (user_id, account_id, operation_type, amount, comment, recipient_details, status)
-       VALUES ($1, $2, 'withdrawal', $3, $4, $5, 'created')
-       RETURNING *`,
-      [userId, account.id, amount, comment, JSON.stringify(recipientDetails)]
-    );
-
-    const operation = operationResult.rows[0];
-
-    // Получаем данные пользователя для уведомления
-    const userResult = await pool.query(
-      'SELECT first_name, last_name, email FROM users WHERE id = $1',
-      [userId]
-    );
-
-    const user = userResult.rows[0];
-    const userName = `${user.first_name} ${user.last_name}`;
-
-    // Отправляем уведомление администратору
+    // Начинаем транзакцию для атомарности операций
+    const client = await pool.connect();
+    
     try {
-      await emailService.sendAdminNotification(
-        'withdrawal',
-        amount,
-        user.email,
-        userName,
-        {
-          comment,
-          recipientDetails,
-          operationId: operation.id
-        }
-      );
-    } catch (emailError) {
-      console.error('Failed to send admin notification:', emailError);
-    }
+      await client.query('BEGIN');
 
-    // Отправляем уведомление пользователю
-    try {
-      await emailService.sendOperationNotification(
-        user.email,
-        user.first_name,
-        'withdrawal',
-        amount,
-        'created'
+      // Создаем операцию
+      const operationResult = await client.query(
+        `INSERT INTO operations (user_id, account_id, operation_type, amount, comment, recipient_details, status)
+         VALUES ($1, $2, 'withdrawal', $3, $4, $5, 'created')
+         RETURNING *`,
+        [userId, account.id, amount, comment, JSON.stringify(recipientDetails)]
       );
-    } catch (emailError) {
-      console.error('Failed to send user notification:', emailError);
-    }
 
-    res.status(201).json({
-      message: 'Withdrawal request created successfully',
-      operation: {
-        id: operation.id,
-        type: operation.operation_type,
-        amount: operation.amount,
-        status: operation.status,
-        comment: operation.comment,
-        recipientDetails: operation.recipient_details,
-        createdAt: operation.created_at
+      const operation = operationResult.rows[0];
+
+      // Списываем средства с указанного счета
+      const newBalance = parseFloat(account.balance) - parseFloat(amount);
+      await client.query(
+        'UPDATE user_accounts SET balance = $1, updated_at = NOW() WHERE id = $2',
+        [newBalance.toFixed(2), account.id]
+      );
+
+      await client.query('COMMIT');
+
+      // Получаем данные пользователя для уведомления
+      const userResult = await client.query(
+        'SELECT first_name, last_name, email FROM users WHERE id = $1',
+        [userId]
+      );
+
+      const user = userResult.rows[0];
+      const userName = `${user.first_name} ${user.last_name}`;
+
+      // Отправляем уведомление администратору
+      try {
+        await emailService.sendAdminNotification(
+          'withdrawal',
+          amount,
+          user.email,
+          userName,
+          {
+            comment,
+            recipientDetails,
+            operationId: operation.id
+          }
+        );
+      } catch (emailError) {
+        console.error('Failed to send admin notification:', emailError);
       }
-    });
+
+      // Отправляем уведомление пользователю
+      try {
+        await emailService.sendOperationNotification(
+          user.email,
+          user.first_name,
+          'withdrawal',
+          amount,
+          'created'
+        );
+      } catch (emailError) {
+        console.error('Failed to send user notification:', emailError);
+      }
+
+      res.status(201).json({
+        message: 'Withdrawal request created successfully',
+        operation: {
+          id: operation.id,
+          type: operation.operation_type,
+          amount: operation.amount,
+          status: operation.status,
+          comment: operation.comment,
+          recipientDetails: operation.recipient_details,
+          createdAt: operation.created_at
+        },
+        newBalance: newBalance.toFixed(2)
+      });
+
+    } catch (transactionError) {
+      await client.query('ROLLBACK');
+      throw transactionError;
+    } finally {
+      client.release();
+    }
 
   } catch (error) {
     console.error('Create withdrawal error:', error);

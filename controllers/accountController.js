@@ -8,7 +8,7 @@ const getAccounts = async (req, res) => {
     // Получаем все счета пользователя с новыми полями
     const result = await pool.query(
       `SELECT id, account_number, balance, currency, is_active, created_at, updated_at,
-              bank, bik_or_bankname, number, bankname, inn, kpp, corp_bank_account
+              bank, bik_or_bankname, number, bankname, inn, kpp, corp_bank_account, percentage
        FROM user_accounts 
        WHERE user_id = $1 
        ORDER BY created_at DESC`,
@@ -42,7 +42,7 @@ const getAccount = async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT id, account_number, balance, currency, is_active, created_at, updated_at,
-              bank, bik_or_bankname, number, bankname, inn, kpp, corp_bank_account
+              bank, bik_or_bankname, number, bankname, inn, kpp, corp_bank_account, percentage
        FROM user_accounts 
        WHERE id = $1 AND user_id = $2`,
       [accountId, userId]
