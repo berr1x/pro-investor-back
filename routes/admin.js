@@ -40,4 +40,19 @@ router.put('/accounts/:accountId/balance', adminController.updateAccountBalance)
 // Обновление процента счета
 router.put('/accounts/:accountId/percentage', adminController.updateAccountPercentage);
 
+// Редактирование пользователя
+router.put('/users/:userId', adminController.updateUser);
+
+// Редактирование банковского счета
+router.put('/accounts/:accountId', adminController.updateBankAccount);
+
+// Редактирование торгового счета
+router.put('/trading-accounts/:accountId', adminController.updateTradingAccount);
+
+// Редактирование паспортных данных пользователя
+router.put('/users/:userId/passport', adminController.updateUserPassport);
+
+// Редактирование операции
+router.put('/operations/:operationId', adminController.updateOperation);
+
 module.exports = router;

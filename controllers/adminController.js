@@ -14,10 +14,21 @@ const processDeposit = async (req, res) => {
     const operationResult = await pool.query(
       `SELECT o.id, o.operation_type, o.amount, o.currency, o.status, o.user_id, o.account_id,
               o.recipient_details, o.comment,
-              ua.account_number, ua.balance as current_balance,
-              u.first_name, u.last_name, u.email
+              CASE 
+                WHEN ua.id IS NOT NULL THEN ua.number
+                WHEN uta.id IS NOT NULL THEN uta.account_number
+                ELSE NULL
+              END as account_number,
+              COALESCE(ua.balance, uta.profit) as current_balance,
+              u.first_name, u.last_name, u.email,
+              CASE 
+                WHEN ua.id IS NOT NULL THEN 'banking'
+                WHEN uta.id IS NOT NULL THEN 'trading'
+                ELSE 'unknown'
+              END as account_type
        FROM operations o
-       JOIN user_accounts ua ON o.account_id = ua.id
+       LEFT JOIN user_accounts ua ON o.account_id = ua.id
+       LEFT JOIN user_trading_accounts uta ON o.account_id = uta.id
        JOIN users u ON o.user_id = u.id
        WHERE o.id = $1`,
       [operationId]
@@ -49,13 +60,23 @@ const processDeposit = async (req, res) => {
 
     const depositAmount = parseFloat(amount);
 
-    // Обновляем баланс пользователя
+    // Обновляем баланс пользователя в зависимости от типа счета
     const newBalance = parseFloat(operation.current_balance) + depositAmount;
     
-    await pool.query(
-      'UPDATE user_accounts SET balance = $1, updated_at = NOW() WHERE id = $2',
-      [newBalance.toFixed(2), operation.account_id]
-    );
+    if (operation.account_type === 'banking') {
+      await pool.query(
+        'UPDATE user_accounts SET balance = $1, updated_at = NOW() WHERE id = $2',
+        [newBalance.toFixed(2), operation.account_id]
+      );
+    } else if (operation.account_type === 'trading') {
+      await pool.query(
+        'UPDATE user_trading_accounts SET profit = $1, updated_at = NOW() WHERE id = $2',
+        [newBalance.toFixed(2), operation.account_id]
+      );
+    } else {
+      await pool.query('ROLLBACK');
+      return res.status(400).json({ message: 'Unknown account type' });
+    }
 
     // Обновляем статус операции и сумму
     await pool.query(
@@ -105,10 +126,20 @@ const getAllOperations = async (req, res) => {
       SELECT o.id, o.operation_type, o.amount, o.currency, o.status, 
              o.comment, o.admin_comment, o.recipient_details, o.contact_method,
              o.created_at, o.updated_at,
-             ua.account_number,
-             u.first_name, u.last_name, u.email
+             CASE 
+               WHEN ua.id IS NOT NULL THEN ua.number
+               WHEN uta.id IS NOT NULL THEN uta.account_number
+               ELSE NULL
+             END as account_number,
+             u.first_name, u.last_name, u.email,
+             CASE 
+               WHEN ua.id IS NOT NULL THEN 'banking'
+               WHEN uta.id IS NOT NULL THEN 'trading'
+               ELSE 'unknown'
+             END as account_type
       FROM operations o
-      JOIN user_accounts ua ON o.account_id = ua.id
+      LEFT JOIN user_accounts ua ON o.account_id = ua.id
+      LEFT JOIN user_trading_accounts uta ON o.account_id = uta.id
       JOIN users u ON o.user_id = u.id
       WHERE 1=1
     `;
@@ -277,6 +308,8 @@ const getAdminStats = async (req, res) => {
     const operationsStats = await pool.query(`
       SELECT 
         COUNT(*) as total_operations,
+        COUNT(CASE WHEN operation_type = 'deposit' THEN 1 END) as deposit_operations,
+        COUNT(CASE WHEN operation_type = 'withdrawal' THEN 1 END) as withdrawal_operations,
         COUNT(CASE WHEN status = 'created' THEN 1 END) as pending_operations,
         COUNT(CASE WHEN status = 'processing' THEN 1 END) as processing_operations,
         COUNT(CASE WHEN status = 'completed' THEN 1 END) as completed_operations,
@@ -291,18 +324,27 @@ const getAdminStats = async (req, res) => {
       SELECT 
         COUNT(*) as total_users,
         COUNT(CASE WHEN is_active = true THEN 1 END) as active_users,
+        COUNT(CASE WHEN is_active = false THEN 1 END) as blocked_users,
         COUNT(CASE WHEN created_at >= NOW() - INTERVAL '30 days' THEN 1 END) as new_users_30_days
       FROM users
     `);
 
-    // Статистика по счетам
-    const accountsStats = await pool.query(`
+    // Статистика по банковским счетам
+    const bankAccountsStats = await pool.query(`
       SELECT 
-        COUNT(*) as total_accounts,
-        SUM(balance) as total_balance,
-        AVG(balance) as avg_balance
+        COUNT(*) as bank_accounts,
+        COALESCE(SUM(balance), 0) as bank_balance
       FROM user_accounts
       WHERE is_active = true
+    `);
+
+    // Статистика по торговым счетам
+    const tradingAccountsStats = await pool.query(`
+      SELECT 
+        COUNT(*) as trading_accounts,
+        COALESCE(SUM(profit), 0) as trading_balance
+      FROM user_trading_accounts
+      WHERE status = 'active'
     `);
 
     // Операции за последние 7 дней
@@ -318,10 +360,40 @@ const getAdminStats = async (req, res) => {
       ORDER BY date DESC
     `);
 
+    const operations = operationsStats.rows[0];
+    const users = usersStats.rows[0];
+    const bankAccounts = bankAccountsStats.rows[0];
+    const tradingAccounts = tradingAccountsStats.rows[0];
+
     res.json({
-      operations: operationsStats.rows[0],
-      users: usersStats.rows[0],
-      accounts: accountsStats.rows[0],
+      // Пользователи
+      totalUsers: parseInt(users.total_users) || 0,
+      activeUsers: parseInt(users.active_users) || 0,
+      blockedUsers: parseInt(users.blocked_users) || 0,
+      newUsers30Days: parseInt(users.new_users_30_days) || 0,
+
+      // Счета
+      totalAccounts: (parseInt(bankAccounts.bank_accounts) || 0) + (parseInt(tradingAccounts.trading_accounts) || 0),
+      bankAccounts: parseInt(bankAccounts.bank_accounts) || 0,
+      tradingAccounts: parseInt(tradingAccounts.trading_accounts) || 0,
+
+      // Операции
+      totalOperations: parseInt(operations.total_operations) || 0,
+      depositOperations: parseInt(operations.deposit_operations) || 0,
+      withdrawalOperations: parseInt(operations.withdrawal_operations) || 0,
+      pendingOperations: parseInt(operations.pending_operations) || 0,
+      processingOperations: parseInt(operations.processing_operations) || 0,
+      completedOperations: parseInt(operations.completed_operations) || 0,
+      rejectedOperations: parseInt(operations.rejected_operations) || 0,
+
+      // Балансы
+      totalBalance: (parseFloat(bankAccounts.bank_balance) || 0) + (parseFloat(tradingAccounts.trading_balance) || 0),
+      bankBalance: parseFloat(bankAccounts.bank_balance) || 0,
+      tradingBalance: parseFloat(tradingAccounts.trading_balance) || 0,
+      totalDeposits: parseFloat(operations.total_deposits) || 0,
+      totalWithdrawals: parseFloat(operations.total_withdrawals) || 0,
+
+      // Дополнительные данные
       recentOperations: recentOperations.rows
     });
 
@@ -424,11 +496,12 @@ const getAllAccounts = async (req, res) => {
 
   try {
     let query = `
-      SELECT ua.id, ua.account_number, ua.balance, ua.currency, ua.is_active, 
-             ua.bank, ua.number, ua.created_at, ua.updated_at,
-             u.first_name, u.last_name, u.email
-      FROM user_accounts ua
-      JOIN users u ON ua.user_id = u.id
+      SELECT uta.id, uta.account_number, uta.profit as balance, uta.currency, uta.status as is_active, 
+             uta.percentage, uta.created_at, uta.updated_at,
+             u.first_name, u.last_name, u.email,
+             'trading' as account_type
+      FROM user_trading_accounts uta
+      JOIN users u ON uta.userId = u.id
       WHERE 1=1
     `;
     
@@ -437,23 +510,23 @@ const getAllAccounts = async (req, res) => {
 
     if (userId) {
       paramCount++;
-      query += ` AND ua.user_id = $${paramCount}`;
+      query += ` AND uta.userId = $${paramCount}`;
       queryParams.push(userId);
     }
 
     if (currency) {
       paramCount++;
-      query += ` AND ua.currency = $${paramCount}`;
+      query += ` AND uta.currency = $${paramCount}`;
       queryParams.push(currency);
     }
 
     if (isActive !== undefined) {
       paramCount++;
-      query += ` AND ua.is_active = $${paramCount}`;
-      queryParams.push(isActive === 'true');
+      query += ` AND uta.status = $${paramCount}`;
+      queryParams.push(isActive === 'true' ? 'active' : 'inactive');
     }
 
-    query += ` ORDER BY ua.created_at DESC LIMIT $${paramCount + 1} OFFSET $${paramCount + 2}`;
+    query += ` ORDER BY uta.created_at DESC LIMIT $${paramCount + 1} OFFSET $${paramCount + 2}`;
     queryParams.push(parseInt(limit), offset);
 
     const result = await pool.query(query, queryParams);
@@ -461,8 +534,8 @@ const getAllAccounts = async (req, res) => {
     // Получаем общее количество счетов для пагинации
     let countQuery = `
       SELECT COUNT(*) as total 
-      FROM user_accounts ua
-      JOIN users u ON ua.user_id = u.id
+      FROM user_trading_accounts uta
+      JOIN users u ON uta.userId = u.id
       WHERE 1=1
     `;
     const countParams = [];
@@ -470,20 +543,20 @@ const getAllAccounts = async (req, res) => {
 
     if (userId) {
       countParamCount++;
-      countQuery += ` AND ua.user_id = $${countParamCount}`;
+      countQuery += ` AND uta.userId = $${countParamCount}`;
       countParams.push(userId);
     }
 
     if (currency) {
       countParamCount++;
-      countQuery += ` AND ua.currency = $${countParamCount}`;
+      countQuery += ` AND uta.currency = $${countParamCount}`;
       countParams.push(currency);
     }
 
     if (isActive !== undefined) {
       countParamCount++;
-      countQuery += ` AND ua.is_active = $${countParamCount}`;
-      countParams.push(isActive === 'true');
+      countQuery += ` AND uta.status = $${countParamCount}`;
+      countParams.push(isActive === 'true' ? 'active' : 'inactive');
     }
 
     const countResult = await pool.query(countQuery, countParams);
@@ -511,9 +584,10 @@ const toggleAccountStatus = async (req, res) => {
   const { isActive } = req.body;
 
   try {
+    const status = isActive ? 'active' : 'inactive';
     const result = await pool.query(
-      'UPDATE user_accounts SET is_active = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING id, account_number, is_active',
-      [isActive, accountId]
+      'UPDATE user_trading_accounts SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING id, account_number, status',
+      [status, accountId]
     );
 
     if (result.rows.length === 0) {
@@ -539,7 +613,7 @@ const updateAccountBalance = async (req, res) => {
   try {
     // Получаем текущий счет
     const currentAccount = await pool.query(
-      'SELECT * FROM user_accounts WHERE id = $1',
+      'SELECT * FROM user_trading_accounts WHERE id = $1',
       [accountId]
     );
 
@@ -548,11 +622,11 @@ const updateAccountBalance = async (req, res) => {
     }
 
     const account = currentAccount.rows[0];
-    const oldBalance = account.balance;
+    const oldBalance = account.profit;
 
-    // Обновляем баланс
+    // Обновляем баланс (profit для торговых счетов)
     const result = await pool.query(
-      'UPDATE user_accounts SET balance = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING *',
+      'UPDATE user_trading_accounts SET profit = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING *',
       [newBalance, accountId]
     );
 
@@ -592,17 +666,40 @@ const getUserDetails = async (req, res) => {
 
     const user = userResult.rows[0];
 
-    // Получаем счета пользователя
+    // Получаем банковские счета пользователя
     const accountsResult = await pool.query(
       'SELECT * FROM user_accounts WHERE user_id = $1 ORDER BY created_at DESC',
       [userId]
     );
 
+    // Получаем торговые счета пользователя
+    const tradingAccountsResult = await pool.query(
+      'SELECT * FROM user_trading_accounts WHERE userId = $1 ORDER BY created_at DESC',
+      [userId]
+    );
+
+    // Получаем паспортные данные пользователя
+    const passportResult = await pool.query(
+      'SELECT * FROM user_passports WHERE user_id = $1',
+      [userId]
+    );
+
     // Получаем операции пользователя за последние 30 дней
     const operationsResult = await pool.query(
-      `SELECT o.*, ua.account_number 
+      `SELECT o.*, 
+              CASE 
+                WHEN ua.id IS NOT NULL THEN ua.number
+                WHEN uta.id IS NOT NULL THEN uta.account_number
+                ELSE NULL
+              END as account_number,
+              CASE 
+                WHEN ua.id IS NOT NULL THEN 'banking'
+                WHEN uta.id IS NOT NULL THEN 'trading'
+                ELSE 'unknown'
+              END as account_type
        FROM operations o
-       JOIN user_accounts ua ON o.account_id = ua.id
+       LEFT JOIN user_accounts ua ON o.account_id = ua.id
+       LEFT JOIN user_trading_accounts uta ON o.account_id = uta.id
        WHERE o.user_id = $1 AND o.created_at >= NOW() - INTERVAL '30 days'
        ORDER BY o.created_at DESC
        LIMIT 50`,
@@ -612,6 +709,8 @@ const getUserDetails = async (req, res) => {
     res.json({
       user,
       accounts: accountsResult.rows,
+      tradingAccounts: tradingAccountsResult.rows,
+      passport: passportResult.rows[0] || null,
       recentOperations: operationsResult.rows
     });
 
@@ -634,7 +733,7 @@ const updateAccountPercentage = async (req, res) => {
 
     // Обновляем процент счета
     await pool.query(
-      'UPDATE user_accounts SET percentage = $1, updated_at = NOW() WHERE id = $2',
+      'UPDATE user_trading_accounts SET percentage = $1, updated_at = NOW() WHERE id = $2',
       [parseFloat(percentage), accountId]
     );
 
@@ -652,10 +751,438 @@ const updateAccountPercentage = async (req, res) => {
   }
 };
 
+// Редактирование пользователя
+const updateUser = async (req, res) => {
+  const { userId } = req.params;
+  const { 
+    email, 
+    first_name, 
+    last_name, 
+    middle_name, 
+    phone, 
+    is_active, 
+    is_verified 
+  } = req.body;
+
+  try {
+    // Проверяем, существует ли пользователь
+    const existingUser = await pool.query(
+      'SELECT * FROM users WHERE id = $1',
+      [userId]
+    );
+
+    if (existingUser.rows.length === 0) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Проверяем уникальность email (если он изменился)
+    if (email && email !== existingUser.rows[0].email) {
+      const emailCheck = await pool.query(
+        'SELECT id FROM users WHERE email = $1 AND id != $2',
+        [email, userId]
+      );
+
+      if (emailCheck.rows.length > 0) {
+        return res.status(400).json({ message: 'Email already exists' });
+      }
+    }
+
+    // Валидация данных
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ message: 'Invalid email format' });
+    }
+
+    if (phone && !/^\+?[1-9]\d{1,14}$/.test(phone)) {
+      return res.status(400).json({ message: 'Invalid phone format' });
+    }
+
+    // Обновляем пользователя
+    const result = await pool.query(
+      `UPDATE users 
+       SET email = COALESCE($1, email),
+           first_name = COALESCE($2, first_name),
+           last_name = COALESCE($3, last_name),
+           middle_name = COALESCE($4, middle_name),
+           phone = COALESCE($5, phone),
+           is_active = COALESCE($6, is_active),
+           is_verified = COALESCE($7, is_verified),
+           updated_at = NOW()
+       WHERE id = $8
+       RETURNING *`,
+      [email, first_name, last_name, middle_name, phone, is_active, is_verified, userId]
+    );
+
+    res.json({
+      message: 'User updated successfully',
+      user: result.rows[0]
+    });
+
+  } catch (error) {
+    console.error('Update user error:', error);
+    res.status(500).json({ message: 'Failed to update user' });
+  }
+};
+
+// Редактирование банковского счета
+const updateBankAccount = async (req, res) => {
+  const { accountId } = req.params;
+  const { 
+    account_number, 
+    balance, 
+    currency, 
+    bank, 
+    number, 
+    is_active, 
+    percentage 
+  } = req.body;
+
+  try {
+    // Проверяем, существует ли счет
+    const existingAccount = await pool.query(
+      'SELECT * FROM user_accounts WHERE id = $1',
+      [accountId]
+    );
+
+    if (existingAccount.rows.length === 0) {
+      return res.status(404).json({ message: 'Account not found' });
+    }
+
+    // Проверяем уникальность номера счета (если он изменился)
+    if (account_number && account_number !== existingAccount.rows[0].account_number) {
+      const accountCheck = await pool.query(
+        'SELECT id FROM user_accounts WHERE account_number = $1 AND id != $2',
+        [account_number, accountId]
+      );
+
+      if (accountCheck.rows.length > 0) {
+        return res.status(400).json({ message: 'Account number already exists' });
+      }
+    }
+
+    // Валидация данных
+    if (balance !== undefined && (isNaN(parseFloat(balance)) || parseFloat(balance) < 0)) {
+      return res.status(400).json({ message: 'Invalid balance. Must be a non-negative number' });
+    }
+
+    if (percentage !== undefined && (isNaN(parseFloat(percentage)) || parseFloat(percentage) < 0)) {
+      return res.status(400).json({ message: 'Invalid percentage. Must be a non-negative number' });
+    }
+
+    if (currency && !['RUB', 'USD', 'EUR', 'CNY'].includes(currency)) {
+      return res.status(400).json({ message: 'Invalid currency. Must be RUB, USD, EUR, or CNY' });
+    }
+
+    // Обновляем счет
+    const result = await pool.query(
+      `UPDATE user_accounts 
+       SET account_number = COALESCE($1, account_number),
+           balance = COALESCE($2, balance),
+           currency = COALESCE($3, currency),
+           bank = COALESCE($4, bank),
+           number = COALESCE($5, number),
+           is_active = COALESCE($6, is_active),
+           percentage = COALESCE($7, percentage),
+           updated_at = NOW()
+       WHERE id = $8
+       RETURNING *`,
+      [account_number, balance, currency, bank, number, is_active, percentage, accountId]
+    );
+
+    res.json({
+      message: 'Bank account updated successfully',
+      account: result.rows[0]
+    });
+
+  } catch (error) {
+    console.error('Update bank account error:', error);
+    res.status(500).json({ message: 'Failed to update bank account' });
+  }
+};
+
+// Редактирование торгового счета
+const updateTradingAccount = async (req, res) => {
+  const { accountId } = req.params;
+  const { 
+    account_number, 
+    profit, 
+    percentage, 
+    currency, 
+    status 
+  } = req.body;
+
+  try {
+    // Проверяем, существует ли счет
+    const existingAccount = await pool.query(
+      'SELECT * FROM user_trading_accounts WHERE id = $1',
+      [accountId]
+    );
+
+    if (existingAccount.rows.length === 0) {
+      return res.status(404).json({ message: 'Trading account not found' });
+    }
+
+    // Проверяем уникальность номера счета (если он изменился)
+    if (account_number && account_number !== existingAccount.rows[0].account_number) {
+      const accountCheck = await pool.query(
+        'SELECT id FROM user_trading_accounts WHERE account_number = $1 AND id != $2',
+        [account_number, accountId]
+      );
+
+      if (accountCheck.rows.length > 0) {
+        return res.status(400).json({ message: 'Account number already exists' });
+      }
+    }
+
+    // Валидация данных
+    if (profit !== undefined && (isNaN(parseFloat(profit)))) {
+      return res.status(400).json({ message: 'Invalid profit. Must be a number' });
+    }
+
+    if (percentage !== undefined && (isNaN(parseFloat(percentage)) || parseFloat(percentage) < 0)) {
+      return res.status(400).json({ message: 'Invalid percentage. Must be a non-negative number' });
+    }
+
+    if (currency && !['RUB', 'USD', 'EUR', 'CNY'].includes(currency)) {
+      return res.status(400).json({ message: 'Invalid currency. Must be RUB, USD, EUR, or CNY' });
+    }
+
+    if (status && !['active', 'inactive', 'closed'].includes(status)) {
+      return res.status(400).json({ message: 'Invalid status. Must be active, inactive, or closed' });
+    }
+
+    // Обновляем счет
+    const result = await pool.query(
+      `UPDATE user_trading_accounts 
+       SET account_number = COALESCE($1, account_number),
+           profit = COALESCE($2, profit),
+           percentage = COALESCE($3, percentage),
+           currency = COALESCE($4, currency),
+           status = COALESCE($5, status),
+           updated_at = NOW()
+       WHERE id = $6
+       RETURNING *`,
+      [account_number, profit, percentage, currency, status, accountId]
+    );
+
+    res.json({
+      message: 'Trading account updated successfully',
+      account: result.rows[0]
+    });
+
+  } catch (error) {
+    console.error('Update trading account error:', error);
+    res.status(500).json({ message: 'Failed to update trading account' });
+  }
+};
+
+// Обновление паспортных данных пользователя
+const updateUserPassport = async (req, res) => {
+  const { userId } = req.params;
+  const { 
+    series, 
+    number, 
+    issued_by, 
+    issue_date, 
+    department_code, 
+    gender, 
+    birth_date 
+  } = req.body;
+
+  try {
+    // Проверяем, существует ли пользователь
+    const existingUser = await pool.query(
+      'SELECT * FROM users WHERE id = $1',
+      [userId]
+    );
+
+    if (existingUser.rows.length === 0) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Валидация данных
+    if (series && series.length > 10) {
+      return res.status(400).json({ message: 'Series must be 10 characters or less' });
+    }
+
+    if (number && number.length > 20) {
+      return res.status(400).json({ message: 'Number must be 20 characters or less' });
+    }
+
+    if (department_code && department_code.length > 10) {
+      return res.status(400).json({ message: 'Department code must be 10 characters or less' });
+    }
+
+    if (gender && !['male', 'female', 'мужской', 'женский'].includes(gender.toLowerCase())) {
+      return res.status(400).json({ message: 'Invalid gender. Must be male, female, мужской, or женский' });
+    }
+
+    // Проверяем, есть ли уже паспортные данные
+    const existingPassport = await pool.query(
+      'SELECT id FROM user_passports WHERE user_id = $1',
+      [userId]
+    );
+
+    let result;
+    if (existingPassport.rows.length > 0) {
+      // Обновляем существующие данные
+      result = await pool.query(
+        `UPDATE user_passports 
+         SET series = COALESCE($1, series),
+             number = COALESCE($2, number),
+             issued_by = COALESCE($3, issued_by),
+             issue_date = COALESCE($4::date, issue_date),
+             department_code = COALESCE($5, department_code),
+             gender = COALESCE($6, gender),
+             birth_date = COALESCE($7::date, birth_date),
+             updated_at = CURRENT_TIMESTAMP
+         WHERE user_id = $8
+         RETURNING *`,
+        [series, number, issued_by, issue_date, department_code, gender, birth_date, userId]
+      );
+    } else {
+      // Создаем новые данные
+      result = await pool.query(
+        `INSERT INTO user_passports 
+         (user_id, series, number, issued_by, issue_date, department_code, gender, birth_date)
+         VALUES ($1, $2, $3, $4, $5::date, $6, $7, $8::date)
+         RETURNING *`,
+        [userId, series, number, issued_by, issue_date, department_code, gender, birth_date]
+      );
+    }
+
+    res.json({
+      message: 'Passport data updated successfully',
+      passport: result.rows[0]
+    });
+
+  } catch (error) {
+    console.error('Update user passport error:', error);
+    res.status(500).json({ message: 'Failed to update passport data' });
+  }
+};
+
+// Обновление операции
+const updateOperation = async (req, res) => {
+  const { operationId } = req.params;
+  const { 
+    amount, 
+    currency, 
+    status, 
+    comment, 
+    admin_comment, 
+    recipient_details, 
+    contact_method 
+  } = req.body;
+
+  try {
+    // Проверяем, существует ли операция
+    const existingOperation = await pool.query(
+      'SELECT * FROM operations WHERE id = $1',
+      [operationId]
+    );
+
+    if (existingOperation.rows.length === 0) {
+      return res.status(404).json({ message: 'Operation not found' });
+    }
+
+    const operation = existingOperation.rows[0];
+
+    // Валидация данных
+    if (amount && (isNaN(parseFloat(amount)) || parseFloat(amount) <= 0)) {
+      return res.status(400).json({ message: 'Amount must be a positive number' });
+    }
+
+    if (currency && !['RUB', 'USD', 'EUR', 'CNY'].includes(currency)) {
+      return res.status(400).json({ message: 'Invalid currency. Must be RUB, USD, EUR, or CNY' });
+    }
+
+    if (status && !['created', 'processing', 'completed', 'rejected'].includes(status)) {
+      return res.status(400).json({ message: 'Invalid status. Must be created, processing, completed, or rejected' });
+    }
+
+    // Обновляем операцию
+    const updateFields = [];
+    const updateValues = [];
+    let paramCount = 0;
+
+    if (amount !== undefined) {
+      paramCount++;
+      updateFields.push(`amount = $${paramCount}`);
+      updateValues.push(parseFloat(amount).toFixed(2));
+    }
+
+    if (currency !== undefined) {
+      paramCount++;
+      updateFields.push(`currency = $${paramCount}`);
+      updateValues.push(currency);
+    }
+
+    if (status !== undefined) {
+      paramCount++;
+      updateFields.push(`status = $${paramCount}`);
+      updateValues.push(status);
+    }
+
+    if (comment !== undefined) {
+      paramCount++;
+      updateFields.push(`comment = $${paramCount}`);
+      updateValues.push(comment);
+    }
+
+    if (admin_comment !== undefined) {
+      paramCount++;
+      updateFields.push(`admin_comment = $${paramCount}`);
+      updateValues.push(admin_comment);
+    }
+
+    if (recipient_details !== undefined) {
+      paramCount++;
+      updateFields.push(`recipient_details = $${paramCount}`);
+      updateValues.push(JSON.stringify(recipient_details));
+    }
+
+    if (contact_method !== undefined) {
+      paramCount++;
+      updateFields.push(`contact_method = $${paramCount}`);
+      updateValues.push(contact_method);
+    }
+
+    if (updateFields.length === 0) {
+      return res.status(400).json({ message: 'No fields to update' });
+    }
+
+    // Добавляем updated_at (не является параметром)
+    updateFields.push(`updated_at = NOW()`);
+
+    // Добавляем ID операции
+    paramCount++;
+    updateValues.push(operationId);
+
+    const updateQuery = `
+      UPDATE operations 
+      SET ${updateFields.join(', ')}
+      WHERE id = $${paramCount}
+      RETURNING *
+    `;
+
+    const result = await pool.query(updateQuery, updateValues);
+
+    res.json({
+      message: 'Operation updated successfully',
+      operation: result.rows[0]
+    });
+
+  } catch (error) {
+    console.error('Update operation error:', error);
+    res.status(500).json({ message: 'Failed to update operation' });
+  }
+};
+
 module.exports = {
   processDeposit,
   getAllOperations,
   updateOperationStatus,
+  updateOperation,
   getAdminStats,
   getAllUsers,
   toggleUserStatus,
@@ -663,5 +1190,9 @@ module.exports = {
   toggleAccountStatus,
   updateAccountBalance,
   updateAccountPercentage,
-  getUserDetails
+  getUserDetails,
+  updateUser,
+  updateBankAccount,
+  updateTradingAccount,
+  updateUserPassport
 };

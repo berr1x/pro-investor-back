@@ -96,27 +96,28 @@ const createWithdrawal = async (req, res) => {
 
   try {
     // Проверяем, что передан номер счета для списания
-    if (!recipientDetails || !recipientDetails.account_number) {
+    if (!recipientDetails || !recipientDetails.accountNumber) {
       return res.status(400).json({ message: 'Account number is required for withdrawal' });
     }
 
-    // Получаем конкретный счет пользователя по номеру
-    const accountResult = await pool.query(
-      'SELECT id, balance, account_number FROM user_accounts WHERE user_id = $1 AND account_number = $2 AND is_active = true',
-      [userId, recipientDetails.account_number]
+    // Получаем торговый счет пользователя по номеру
+    const tradingAccountResult = await pool.query(
+      'SELECT id, account_number, currency, status, profit FROM user_trading_accounts WHERE userId = $1 AND account_number = $2 AND status = $3',
+      [userId, recipientDetails.accountNumber, 'active']
     );
 
-    if (accountResult.rows.length === 0) {
-      return res.status(400).json({ message: 'Account not found or inactive' });
+    if (tradingAccountResult.rows.length === 0) {
+      return res.status(400).json({ message: 'Trading account not found or inactive' });
     }
 
-    const account = accountResult.rows[0];
+    const tradingAccount = tradingAccountResult.rows[0];
+    const currentProfit = parseFloat(tradingAccount.profit || 0);
 
-    // Проверяем достаточность средств на указанном счете
-    if (parseFloat(account.balance) < parseFloat(amount)) {
+    // Проверяем достаточность средств на торговом счете (проверяем profit)
+    if (currentProfit < parseFloat(amount)) {
       return res.status(400).json({ 
         message: 'Insufficient funds', 
-        currentBalance: account.balance,
+        currentBalance: currentProfit,
         requestedAmount: amount 
       });
     }
@@ -127,21 +128,21 @@ const createWithdrawal = async (req, res) => {
     try {
       await client.query('BEGIN');
 
-      // Создаем операцию
+      // Создаем операцию вывода
       const operationResult = await client.query(
-        `INSERT INTO operations (user_id, account_id, operation_type, amount, comment, recipient_details, status)
-         VALUES ($1, $2, 'withdrawal', $3, $4, $5, 'created')
+        `INSERT INTO operations (user_id, account_id, operation_type, amount, comment, recipient_details, status, currency)
+         VALUES ($1, $2, 'withdrawal', $3, $4, $5, 'created', $6)
          RETURNING *`,
-        [userId, account.id, amount, comment, JSON.stringify(recipientDetails)]
+        [userId, tradingAccount.id, amount, comment, JSON.stringify(recipientDetails), tradingAccount.currency]
       );
 
       const operation = operationResult.rows[0];
 
-      // Списываем средства с указанного счета
-      const newBalance = parseFloat(account.balance) - parseFloat(amount);
+      // Отнимаем сумму вывода из profit торгового счета
+      const newProfit = currentProfit - parseFloat(amount);
       await client.query(
-        'UPDATE user_accounts SET balance = $1, updated_at = NOW() WHERE id = $2',
-        [newBalance.toFixed(2), account.id]
+        'UPDATE user_trading_accounts SET profit = $1, updated_at = NOW() WHERE id = $2',
+        [newProfit.toFixed(2), tradingAccount.id]
       );
 
       await client.query('COMMIT');
@@ -194,9 +195,10 @@ const createWithdrawal = async (req, res) => {
           status: operation.status,
           comment: operation.comment,
           recipientDetails: operation.recipient_details,
+          currency: operation.currency,
           createdAt: operation.created_at
         },
-        newBalance: newBalance.toFixed(2)
+        remainingBalance: newProfit.toFixed(2)
       });
 
     } catch (transactionError) {
@@ -223,9 +225,19 @@ const getOperations = async (req, res) => {
       SELECT o.id, o.operation_type, o.amount, o.currency, o.status, 
              o.comment, o.admin_comment, o.recipient_details, o.contact_method,
              o.created_at, o.updated_at,
-             ua.account_number
+             CASE 
+               WHEN ua.id IS NOT NULL THEN ua.number
+               WHEN uta.id IS NOT NULL THEN uta.account_number
+               ELSE NULL
+             END as account_number,
+             CASE 
+               WHEN ua.id IS NOT NULL THEN 'banking'
+               WHEN uta.id IS NOT NULL THEN 'trading'
+               ELSE 'unknown'
+             END as account_type
       FROM operations o
-      JOIN user_accounts ua ON o.account_id = ua.id
+      LEFT JOIN user_accounts ua ON o.account_id = ua.id
+      LEFT JOIN user_trading_accounts uta ON o.account_id = uta.id
       WHERE o.user_id = $1
     `;
     
