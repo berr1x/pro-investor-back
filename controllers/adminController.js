@@ -428,7 +428,7 @@ const getAllUsers = async (req, res) => {
       queryParams.push(`%${search}%`);
     }
 
-    query += ` GROUP BY u.id ORDER BY u.created_at DESC LIMIT $${paramCount + 1} OFFSET $${paramCount + 2}`;
+    query += ` GROUP BY u.id, u.email, u.first_name, u.last_name, u.middle_name, u.phone, u.is_active, u.is_verified, u.created_at ORDER BY u.created_at DESC LIMIT $${paramCount + 1} OFFSET $${paramCount + 2}`;
     queryParams.push(parseInt(limit), offset);
 
     const result = await pool.query(query, queryParams);
