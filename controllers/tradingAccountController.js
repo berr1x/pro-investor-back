@@ -77,44 +77,15 @@ const getTradingAccounts = async (req, res) => {
     try {
         const userId = req.user.id;
 
-        // Получаем торговые счета
+        // Получаем торговые счета с deposit_amount из таблицы
         const accounts = await pool.query(
-            'SELECT * FROM user_trading_accounts WHERE userId = $1 ORDER BY created_at DESC',
+            'SELECT *, deposit_amount FROM user_trading_accounts WHERE userId = $1 ORDER BY created_at DESC',
             [userId]
-        );
-
-        // Для каждого счета получаем сумму депозитов
-        const accountsWithDeposits = await Promise.all(
-            accounts.rows.map(async (account) => {
-                // Ищем депозиты для этого торгового счета
-                const deposits = await pool.query(
-                    `SELECT amount, currency 
-                     FROM operations 
-                     WHERE user_id = $1 
-                     AND operation_type = 'deposit' 
-                     AND recipient_details->>'accountNumber' = $2`,
-                    [userId, account.account_number]
-                );
-
-                // Суммируем депозиты по валютам
-                const depositAmount = deposits.rows.reduce((sum, deposit) => {
-                    // Если валюта депозита совпадает с валютой счета, добавляем к сумме
-                    if (deposit.currency === account.currency) {
-                        return sum + parseFloat(deposit.amount || 0);
-                    }
-                    return sum;
-                }, 0);
-
-                return {
-                    ...account,
-                    deposit_amount: depositAmount
-                };
-            })
         );
 
         res.json({
             success: true,
-            accounts: accountsWithDeposits
+            accounts: accounts.rows
         });
 
     } catch (error) {

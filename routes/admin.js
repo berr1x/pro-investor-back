@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const adminController = require('../controllers/adminController');
+const adminTradingAccountController = require('../controllers/adminTradingAccountController');
 const { authenticateToken, requireAdmin } = require('../middleware/auth');
 
 // Все маршруты требуют авторизации и админских прав
@@ -28,6 +29,9 @@ router.put('/users/:userId/status', adminController.toggleUserStatus);
 // Получение детальной информации о пользователе
 router.get('/users/:userId/details', adminController.getUserDetails);
 
+// Получение пользователя по ID (алиас для getUserDetails)
+router.get('/users/:userId', adminController.getUserDetails);
+
 // Получение всех счетов
 router.get('/accounts', adminController.getAllAccounts);
 
@@ -47,12 +51,15 @@ router.put('/users/:userId', adminController.updateUser);
 router.put('/accounts/:accountId', adminController.updateBankAccount);
 
 // Редактирование торгового счета
-router.put('/trading-accounts/:accountId', adminController.updateTradingAccount);
+router.put('/trading-accounts/:accountId', adminTradingAccountController.updateTradingAccount);
 
 // Редактирование паспортных данных пользователя
 router.put('/users/:userId/passport', adminController.updateUserPassport);
 
 // Редактирование операции
 router.put('/operations/:operationId', adminController.updateOperation);
+
+// Обновление роли пользователя
+router.put('/users/:userId/role', adminController.updateUserRole);
 
 module.exports = router;

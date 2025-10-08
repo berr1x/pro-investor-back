@@ -4,22 +4,56 @@ const emailService = require('../utils/emailService');
 // Создание заявки на пополнение
 const createDeposit = async (req, res) => {
   const userId = req.user.id;
-  const { amount, currency, comment, recipientDetails } = req.body;
+  const { amount, currency, comment, recipientDetails, tradingAccountId } = req.body;
+
+  console.log('Create deposit request:', { userId, tradingAccountId, amount, currency });
 
   try {
-    // Получаем основной счет пользователя
-    const accountResult = await pool.query(
-      'SELECT id FROM user_accounts WHERE user_id = $1 AND is_active = true ORDER BY created_at ASC LIMIT 1',
-      [userId]
-    );
+    let accountId;
+    let accountType = 'banking';
 
-    if (accountResult.rows.length === 0) {
-      return res.status(400).json({ message: 'No active account found' });
+    // Если указан tradingAccountId, работаем с торговым счетом
+    if (tradingAccountId) {
+      console.log('Looking for trading account:', { tradingAccountId, userId });
+      
+      const tradingAccountResult = await pool.query(
+        'SELECT id, deposit_amount FROM user_trading_accounts WHERE id = $1 AND userId = $2 AND status = $3',
+        [tradingAccountId, userId, 'active']
+      );
+
+      console.log('Trading account query result:', tradingAccountResult.rows);
+
+      if (tradingAccountResult.rows.length === 0) {
+        // Давайте проверим, какие торговые счета есть у пользователя
+        const allUserTradingAccounts = await pool.query(
+          'SELECT id, account_number, status FROM user_trading_accounts WHERE userId = $1',
+          [userId]
+        );
+        console.log('All user trading accounts:', allUserTradingAccounts.rows);
+        
+        return res.status(400).json({ 
+          message: 'Trading account not found or inactive',
+          availableAccounts: allUserTradingAccounts.rows
+        });
+      }
+
+      accountId = tradingAccountResult.rows[0].id;
+      accountType = 'trading';
+    } else {
+      // Получаем основной банковский счет пользователя
+      const accountResult = await pool.query(
+        'SELECT id FROM user_accounts WHERE user_id = $1 AND is_active = true ORDER BY created_at ASC LIMIT 1',
+        [userId]
+      );
+
+      if (accountResult.rows.length === 0) {
+        return res.status(400).json({ message: 'No active account found' });
+      }
+
+      accountId = accountResult.rows[0].id;
     }
 
-    const accountId = accountResult.rows[0].id;
-
-    // Создаем операцию с новыми полями
+    // Создаем операцию
     const operationResult = await pool.query(
       `INSERT INTO operations (user_id, account_id, operation_type, amount, currency, comment, recipient_details, status)
        VALUES ($1, $2, 'deposit', $3, $4, $5, $6, 'created')

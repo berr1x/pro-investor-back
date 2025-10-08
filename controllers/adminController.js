@@ -61,17 +61,23 @@ const processDeposit = async (req, res) => {
     const depositAmount = parseFloat(amount);
 
     // Обновляем баланс пользователя в зависимости от типа счета
-    const newBalance = parseFloat(operation.current_balance) + depositAmount;
-    
     if (operation.account_type === 'banking') {
+      const newBalance = parseFloat(operation.current_balance) + depositAmount;
       await pool.query(
         'UPDATE user_accounts SET balance = $1, updated_at = NOW() WHERE id = $2',
         [newBalance.toFixed(2), operation.account_id]
       );
     } else if (operation.account_type === 'trading') {
+      // Для торговых счетов добавляем к deposit_amount
+      const currentDepositAmount = await pool.query(
+        'SELECT deposit_amount FROM user_trading_accounts WHERE id = $1',
+        [operation.account_id]
+      );
+      const newDepositAmount = parseFloat(currentDepositAmount.rows[0].deposit_amount) + depositAmount;
+      
       await pool.query(
-        'UPDATE user_trading_accounts SET profit = $1, updated_at = NOW() WHERE id = $2',
-        [newBalance.toFixed(2), operation.account_id]
+        'UPDATE user_trading_accounts SET deposit_amount = $1, updated_at = NOW() WHERE id = $2',
+        [newDepositAmount.toFixed(2), operation.account_id]
       );
     } else {
       await pool.query('ROLLBACK');
@@ -1064,108 +1070,68 @@ const updateUserPassport = async (req, res) => {
 // Обновление операции
 const updateOperation = async (req, res) => {
   const { operationId } = req.params;
-  const { 
-    amount, 
-    currency, 
-    status, 
-    comment, 
-    admin_comment, 
-    recipient_details, 
-    contact_method 
-  } = req.body;
+  const { amount, currency, comment, recipient_details, status, admin_comment } = req.body;
 
   try {
-    // Проверяем, существует ли операция
-    const existingOperation = await pool.query(
-      'SELECT * FROM operations WHERE id = $1',
-      [operationId]
-    );
-
-    if (existingOperation.rows.length === 0) {
-      return res.status(404).json({ message: 'Operation not found' });
-    }
-
-    const operation = existingOperation.rows[0];
-
     // Валидация данных
-    if (amount && (isNaN(parseFloat(amount)) || parseFloat(amount) <= 0)) {
-      return res.status(400).json({ message: 'Amount must be a positive number' });
+    if (amount !== undefined && (isNaN(parseFloat(amount)) || parseFloat(amount) <= 0)) {
+      return res.status(400).json({ message: 'Invalid amount. Must be a positive number.' });
+    }
+    if (currency && !['RUB', 'USD', 'EUR'].includes(currency)) {
+      return res.status(400).json({ message: 'Invalid currency. Must be RUB, USD, or EUR.' });
+    }
+    if (status && !['created', 'processing', 'completed', 'cancelled', 'rejected'].includes(status)) {
+      return res.status(400).json({ message: 'Invalid status. Must be created, processing, completed, cancelled, or rejected.' });
     }
 
-    if (currency && !['RUB', 'USD', 'EUR', 'CNY'].includes(currency)) {
-      return res.status(400).json({ message: 'Invalid currency. Must be RUB, USD, EUR, or CNY' });
-    }
-
-    if (status && !['created', 'processing', 'completed', 'rejected'].includes(status)) {
-      return res.status(400).json({ message: 'Invalid status. Must be created, processing, completed, or rejected' });
-    }
-
-    // Обновляем операцию
     const updateFields = [];
     const updateValues = [];
-    let paramCount = 0;
+    let paramCount = 1;
 
     if (amount !== undefined) {
-      paramCount++;
-      updateFields.push(`amount = $${paramCount}`);
-      updateValues.push(parseFloat(amount).toFixed(2));
+      updateFields.push(`amount = $${paramCount++}`);
+      updateValues.push(parseFloat(amount));
     }
-
     if (currency !== undefined) {
-      paramCount++;
-      updateFields.push(`currency = $${paramCount}`);
+      updateFields.push(`currency = $${paramCount++}`);
       updateValues.push(currency);
     }
-
-    if (status !== undefined) {
-      paramCount++;
-      updateFields.push(`status = $${paramCount}`);
-      updateValues.push(status);
-    }
-
     if (comment !== undefined) {
-      paramCount++;
-      updateFields.push(`comment = $${paramCount}`);
+      updateFields.push(`comment = $${paramCount++}`);
       updateValues.push(comment);
     }
-
-    if (admin_comment !== undefined) {
-      paramCount++;
-      updateFields.push(`admin_comment = $${paramCount}`);
-      updateValues.push(admin_comment);
-    }
-
     if (recipient_details !== undefined) {
-      paramCount++;
-      updateFields.push(`recipient_details = $${paramCount}`);
+      updateFields.push(`recipient_details = $${paramCount++}`);
       updateValues.push(JSON.stringify(recipient_details));
     }
-
-    if (contact_method !== undefined) {
-      paramCount++;
-      updateFields.push(`contact_method = $${paramCount}`);
-      updateValues.push(contact_method);
+    if (status !== undefined) {
+      updateFields.push(`status = $${paramCount++}`);
+      updateValues.push(status);
+    }
+    if (admin_comment !== undefined) {
+      updateFields.push(`admin_comment = $${paramCount++}`);
+      updateValues.push(admin_comment);
     }
 
     if (updateFields.length === 0) {
       return res.status(400).json({ message: 'No fields to update' });
     }
 
-    // Добавляем updated_at (не является параметром)
-    updateFields.push(`updated_at = NOW()`);
+    updateFields.push(`updated_at = CURRENT_TIMESTAMP`);
+    updateValues.push(operationId); // Добавляем operationId как последний параметр для WHERE
 
-    // Добавляем ID операции
-    paramCount++;
-    updateValues.push(operationId);
-
-    const updateQuery = `
+    const query = `
       UPDATE operations 
       SET ${updateFields.join(', ')}
       WHERE id = $${paramCount}
       RETURNING *
     `;
 
-    const result = await pool.query(updateQuery, updateValues);
+    const result = await pool.query(query, updateValues);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'Operation not found' });
+    }
 
     res.json({
       message: 'Operation updated successfully',
@@ -1175,6 +1141,54 @@ const updateOperation = async (req, res) => {
   } catch (error) {
     console.error('Update operation error:', error);
     res.status(500).json({ message: 'Failed to update operation' });
+  }
+};
+// Обновление роли пользователя
+const updateUserRole = async (req, res) => {
+  const { userId } = req.params;
+  const { role } = req.body;
+
+  try {
+    // Валидация роли
+    if (!role || !['user', 'admin', 'moderator'].includes(role)) {
+      return res.status(400).json({ 
+        message: 'Invalid role. Must be user, admin, or moderator.' 
+      });
+    }
+
+    // Проверяем, что пользователь существует
+    const userResult = await pool.query(
+      'SELECT id, role FROM users WHERE id = $1',
+      [userId]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    const currentUser = userResult.rows[0];
+
+    // Проверяем, что не пытаемся изменить роль самого себя
+    if (parseInt(userId) === req.user.id) {
+      return res.status(400).json({ 
+        message: 'You cannot change your own role.' 
+      });
+    }
+
+    // Обновляем роль
+    const result = await pool.query(
+      'UPDATE users SET role = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING id, first_name, last_name, email, role',
+      [role, userId]
+    );
+
+    res.json({
+      message: `User role updated to ${role} successfully`,
+      user: result.rows[0]
+    });
+
+  } catch (error) {
+    console.error('Update user role error:', error);
+    res.status(500).json({ message: 'Failed to update user role' });
   }
 };
 
@@ -1194,5 +1208,6 @@ module.exports = {
   updateUser,
   updateBankAccount,
   updateTradingAccount,
-  updateUserPassport
+  updateUserPassport,
+  updateUserRole
 };

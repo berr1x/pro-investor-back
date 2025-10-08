@@ -50,6 +50,8 @@ const accountRoutes = require('./routes/accounts');
 const operationRoutes = require('./routes/operations');
 const adminRoutes = require('./routes/admin');
 const tradingAccountRoutes = require('./routes/tradingAccounts');
+const adminBankAccountRoutes = require('./routes/adminBankAccounts');
+const adminTradingAccountRoutes = require('./routes/adminTradingAccounts');
 
 // Routes
 app.get('/', (req, res) => {
@@ -72,6 +74,8 @@ app.use('/api/accounts', accountRoutes);
 app.use('/api/operations', operationRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/trading-accounts', tradingAccountRoutes);
+app.use('/api/admin/bank-accounts', adminBankAccountRoutes);
+app.use('/api/admin/trading-accounts', adminTradingAccountRoutes);
 
 // Error handling middleware
 app.use((err, req, res, next) => {
