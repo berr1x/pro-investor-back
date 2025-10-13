@@ -86,7 +86,7 @@ const getAllTradingAccounts = async (req, res) => {
 
 // Создание торгового счета
 const createTradingAccount = async (req, res) => {
-  const { userId, currency = 'USD', percentage = 0.00 } = req.body;
+  const { userId, currency = 'USD', percentage = 0.00, deposit_amount = 0.00 } = req.body;
 
   try {
     // Валидация данных
@@ -98,6 +98,9 @@ const createTradingAccount = async (req, res) => {
     }
     if (percentage !== undefined && (isNaN(parseFloat(percentage)) || parseFloat(percentage) < 0 || parseFloat(percentage) > 100)) {
       return res.status(400).json({ message: 'Invalid percentage. Must be between 0 and 100.' });
+    }
+    if (deposit_amount !== undefined && (isNaN(parseFloat(deposit_amount)) || parseFloat(deposit_amount) < 0)) {
+      return res.status(400).json({ message: 'Invalid deposit amount. Must be a non-negative number.' });
     }
 
     // Проверяем, существует ли пользователь
@@ -141,9 +144,9 @@ const createTradingAccount = async (req, res) => {
     // Создаем торговый счет
     const result = await pool.query(
       `INSERT INTO user_trading_accounts (userId, account_number, currency, profit, deposit_amount, percentage, status)
-       VALUES ($1, $2, $3, 0.00, 0.00, $4, 'active')
+       VALUES ($1, $2, $3, 0.00, $4, $5, 'active')
        RETURNING *`,
-      [userId, accountNumber, currency, parseFloat(percentage)]
+      [userId, accountNumber, currency, parseFloat(deposit_amount), parseFloat(percentage)]
     );
 
     res.status(201).json({

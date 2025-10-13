@@ -417,7 +417,7 @@ const getAllUsers = async (req, res) => {
   try {
     let query = `
       SELECT u.id, u.email, u.first_name, u.last_name, u.middle_name, 
-             u.phone, u.is_active, u.is_verified, u.created_at,
+             u.phone, u.is_active, u.is_verified, u.created_at, u.role,
              COUNT(ua.id) as accounts_count,
              COALESCE(SUM(ua.balance), 0) as total_balance
       FROM users u
@@ -434,7 +434,7 @@ const getAllUsers = async (req, res) => {
       queryParams.push(`%${search}%`);
     }
 
-    query += ` GROUP BY u.id, u.email, u.first_name, u.last_name, u.middle_name, u.phone, u.is_active, u.is_verified, u.created_at ORDER BY u.created_at DESC LIMIT $${paramCount + 1} OFFSET $${paramCount + 2}`;
+    query += ` GROUP BY u.id, u.email, u.first_name, u.last_name, u.middle_name, u.phone, u.is_active, u.is_verified, u.created_at, u.role ORDER BY u.created_at DESC LIMIT $${paramCount + 1} OFFSET $${paramCount + 2}`;
     queryParams.push(parseInt(limit), offset);
 
     const result = await pool.query(query, queryParams);
@@ -767,7 +767,8 @@ const updateUser = async (req, res) => {
     middle_name, 
     phone, 
     is_active, 
-    is_verified 
+    is_verified,
+    role
   } = req.body;
 
   try {
@@ -812,10 +813,11 @@ const updateUser = async (req, res) => {
            phone = COALESCE($5, phone),
            is_active = COALESCE($6, is_active),
            is_verified = COALESCE($7, is_verified),
+           role = COALESCE($8, role),
            updated_at = NOW()
-       WHERE id = $8
+       WHERE id = $9
        RETURNING *`,
-      [email, first_name, last_name, middle_name, phone, is_active, is_verified, userId]
+      [email, first_name, last_name, middle_name, phone, is_active, is_verified, role, userId]
     );
 
     res.json({

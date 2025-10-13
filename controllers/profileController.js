@@ -8,7 +8,7 @@ const getProfile = async (req, res) => {
     // Получаем основную информацию о пользователе
     const userResult = await pool.query(
       `SELECT id, email, first_name, last_name, middle_name, phone, 
-              is_active, is_verified, created_at, updated_at, auth_method
+              is_active, is_verified, created_at, updated_at, auth_method, role
        FROM users WHERE id = $1`,
       [userId]
     );
@@ -49,7 +49,8 @@ const getProfile = async (req, res) => {
         isVerified: user.is_verified,
         createdAt: user.created_at,
         updatedAt: user.updated_at,
-        authMethod: user.auth_method
+        authMethod: user.auth_method,
+        role: user.role
       },
       passport: passportResult.rows[0] || null,
       documents: documentsResult.rows,
