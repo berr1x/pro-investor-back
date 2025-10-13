@@ -11,7 +11,7 @@ const PORT = process.env.PORT || 5000;
 app.use(helmet());
 app.use(cors({
   origin: process.env.NODE_ENV === 'production' 
-    ? ['https://pro-investor-front.vercel.app'] 
+    ? ['https://24rusinvest.ru'] 
     : ['http://localhost:3000'],
   credentials: true
 }));
