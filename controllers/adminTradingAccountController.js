@@ -165,6 +165,8 @@ const updateTradingAccount = async (req, res) => {
   const { accountId } = req.params;
   const { account_number, profit, deposit_amount, percentage, currency, status } = req.body;
 
+  const client = await pool.connect();
+
   try {
     // Валидация данных
     if (profit !== undefined && (isNaN(parseFloat(profit)) || parseFloat(profit) < 0)) {
@@ -173,15 +175,29 @@ const updateTradingAccount = async (req, res) => {
     if (deposit_amount !== undefined && (isNaN(parseFloat(deposit_amount)) || parseFloat(deposit_amount) < 0)) {
       return res.status(400).json({ message: 'Invalid deposit amount. Must be a non-negative number.' });
     }
-    if (percentage !== undefined && (isNaN(parseFloat(percentage)) || parseFloat(percentage) < 0 || parseFloat(percentage) > 100)) {
-      return res.status(400).json({ message: 'Invalid percentage. Must be between 0 and 100.' });
-    }
-    if (currency && !['RUB', 'USD', 'EUR'].includes(currency)) {
-      return res.status(400).json({ message: 'Invalid currency. Must be RUB, USD, or EUR.' });
+    if (currency && !['RUB', 'USD', 'EUR', 'CNY'].includes(currency)) {
+      return res.status(400).json({ message: 'Invalid currency. Must be RUB, USD, EUR, or CNY.' });
     }
     if (status && !['active', 'inactive', 'closed'].includes(status)) {
       return res.status(400).json({ message: 'Invalid status. Must be active, inactive, or closed.' });
     }
+
+    await client.query('BEGIN');
+
+    // Получаем текущие данные счета
+    const currentAccountResult = await client.query(
+      'SELECT id, userId, account_number, profit, deposit_amount, currency FROM user_trading_accounts WHERE id = $1',
+      [accountId]
+    );
+
+    if (currentAccountResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: 'Trading account not found' });
+    }
+
+    const currentAccount = currentAccountResult.rows[0];
+    const oldProfit = parseFloat(currentAccount.profit || 0);
+    const oldDeposit = parseFloat(currentAccount.deposit_amount || 0);
 
     const updateFields = [];
     const updateValues = [];
@@ -189,11 +205,12 @@ const updateTradingAccount = async (req, res) => {
 
     if (account_number !== undefined) {
       // Проверяем уникальность номера счета
-      const existingAccount = await pool.query(
+      const existingAccount = await client.query(
         'SELECT id FROM user_trading_accounts WHERE account_number = $1 AND id != $2',
         [account_number, accountId]
       );
       if (existingAccount.rows.length > 0) {
+        await client.query('ROLLBACK');
         return res.status(400).json({ message: 'Account number already exists.' });
       }
       updateFields.push(`account_number = $${paramCount++}`);
@@ -221,6 +238,7 @@ const updateTradingAccount = async (req, res) => {
     }
 
     if (updateFields.length === 0) {
+      await client.query('ROLLBACK');
       return res.status(400).json({ message: 'No fields to update' });
     }
 
@@ -234,20 +252,84 @@ const updateTradingAccount = async (req, res) => {
       RETURNING *
     `;
 
-    const result = await pool.query(query, updateValues);
+    const result = await client.query(query, updateValues);
 
     if (result.rows.length === 0) {
+      await client.query('ROLLBACK');
       return res.status(404).json({ message: 'Trading account not found' });
     }
 
+    const updatedAccount = result.rows[0];
+    const newProfit = parseFloat(updatedAccount.profit || 0);
+    const newDeposit = parseFloat(updatedAccount.deposit_amount || 0);
+
+    // Создаем операции для изменений баланса
+    const operations = [];
+
+    // Операция для изменения прибыли
+    if (profit !== undefined && newProfit !== oldProfit) {
+      const profitDiff = newProfit - oldProfit;
+      if (profitDiff !== 0) {
+        const operationType = profitDiff > 0 ? 'deposit' : 'withdrawal';
+        const operationAmount = Math.abs(profitDiff);
+        
+        operations.push({
+          user_id: currentAccount.userId,
+          account_id: accountId,
+          operation_type: operationType,
+          amount: operationAmount,
+          currency: updatedAccount.currency,
+          comment: `Корректировка прибыли администратором. ${profitDiff > 0 ? 'Начислено' : 'Списано'}: ${operationAmount} ${updatedAccount.currency}`,
+          recipient_details: JSON.stringify({}),
+          status: 'completed'
+        });
+      }
+    }
+
+    // Операция для изменения депозита
+    if (deposit_amount !== undefined && newDeposit !== oldDeposit) {
+      const depositDiff = newDeposit - oldDeposit;
+      if (depositDiff !== 0) {
+        const operationType = depositDiff > 0 ? 'deposit' : 'withdrawal';
+        const operationAmount = Math.abs(depositDiff);
+        
+        operations.push({
+          user_id: currentAccount.userId,
+          account_id: accountId,
+          operation_type: operationType,
+          amount: operationAmount,
+          currency: updatedAccount.currency,
+          comment: `Корректировка депозита администратором. ${depositDiff > 0 ? 'Начислено' : 'Списано'}: ${operationAmount} ${updatedAccount.currency}`,
+          recipient_details: JSON.stringify({}),
+          status: 'completed'
+        });
+      }
+    }
+
+    // Вставляем операции
+    for (const operation of operations) {
+      await client.query(
+        `INSERT INTO operations (user_id, account_id, operation_type, amount, currency, comment, recipient_details, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [operation.user_id, operation.account_id, operation.operation_type, operation.amount, 
+         operation.currency, operation.comment, operation.recipient_details, operation.status]
+      );
+    }
+
+    await client.query('COMMIT');
+
     res.json({
       message: 'Trading account updated successfully',
-      account: result.rows[0]
+      account: updatedAccount,
+      operationsCreated: operations.length
     });
 
   } catch (error) {
+    await client.query('ROLLBACK');
     console.error('Update trading account error:', error);
     res.status(500).json({ message: 'Failed to update trading account' });
+  } finally {
+    client.release();
   }
 };
 
@@ -278,9 +360,68 @@ const toggleTradingAccountStatus = async (req, res) => {
   }
 };
 
+// Удаление торгового счета и всех связанных операций
+const deleteTradingAccount = async (req, res) => {
+  const { accountId } = req.params;
+
+  if (!accountId) {
+    return res.status(400).json({ message: 'Account ID is required' });
+  }
+
+  const client = await pool.connect();
+
+  try {
+    await client.query('BEGIN');
+
+    // Проверяем, существует ли счет
+    const accountResult = await client.query(
+      'SELECT id, account_number, userId FROM user_trading_accounts WHERE id = $1',
+      [accountId]
+    );
+
+    if (accountResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: 'Trading account not found' });
+    }
+
+    const account = accountResult.rows[0];
+
+    // Удаляем все операции, связанные с этим счетом
+    await client.query(
+      'DELETE FROM operations WHERE account_id = $1',
+      [accountId]
+    );
+
+    // Удаляем сам торговый счет
+    await client.query(
+      'DELETE FROM user_trading_accounts WHERE id = $1',
+      [accountId]
+    );
+
+    await client.query('COMMIT');
+
+    res.json({
+      message: 'Trading account and all related operations deleted successfully',
+      deletedAccount: {
+        id: account.id,
+        account_number: account.account_number,
+        userId: account.userId
+      }
+    });
+
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Delete trading account error:', error);
+    res.status(500).json({ message: 'Failed to delete trading account' });
+  } finally {
+    client.release();
+  }
+};
+
 module.exports = {
   getAllTradingAccounts,
   createTradingAccount,
   updateTradingAccount,
-  toggleTradingAccountStatus
+  toggleTradingAccountStatus,
+  deleteTradingAccount
 };

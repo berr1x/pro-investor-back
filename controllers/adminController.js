@@ -132,20 +132,16 @@ const getAllOperations = async (req, res) => {
       SELECT o.id, o.operation_type, o.amount, o.currency, o.status, 
              o.comment, o.admin_comment, o.recipient_details, o.contact_method,
              o.created_at, o.updated_at,
-             CASE 
-               WHEN ua.id IS NOT NULL THEN ua.number
-               WHEN uta.id IS NOT NULL THEN uta.account_number
-               ELSE NULL
-             END as account_number,
+             COALESCE(ua.number, uta.account_number) as account_number,
              u.first_name, u.last_name, u.email,
              CASE 
-               WHEN ua.id IS NOT NULL THEN 'banking'
                WHEN uta.id IS NOT NULL THEN 'trading'
+               WHEN ua.id IS NOT NULL THEN 'banking'
                ELSE 'unknown'
              END as account_type
       FROM operations o
-      LEFT JOIN user_accounts ua ON o.account_id = ua.id
       LEFT JOIN user_trading_accounts uta ON o.account_id = uta.id
+      LEFT JOIN user_accounts ua ON o.account_id = ua.id
       JOIN users u ON o.user_id = u.id
       WHERE 1=1
     `;
@@ -1194,6 +1190,39 @@ const updateUserRole = async (req, res) => {
   }
 };
 
+// Получение счетов пользователя для создания операции
+const getUserAccounts = async (req, res) => {
+  const { userId } = req.params;
+
+  try {
+    // Проверяем, существует ли пользователь
+    const userResult = await pool.query('SELECT id, first_name, last_name FROM users WHERE id = $1', [userId]);
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Получаем только торговые счета пользователя
+    const tradingAccountsResult = await pool.query(
+      `SELECT id, account_number, currency, 
+              (COALESCE(deposit_amount, 0) + COALESCE(profit, 0)) as totalBalance,
+              deposit_amount, profit, status, 'trading' as type
+       FROM user_trading_accounts 
+       WHERE userId = $1 AND status = 'active'
+       ORDER BY created_at DESC`,
+      [userId]
+    );
+
+    res.json({
+      user: userResult.rows[0],
+      accounts: tradingAccountsResult.rows
+    });
+
+  } catch (error) {
+    console.error('Get user accounts error:', error);
+    res.status(500).json({ message: 'Failed to get user accounts' });
+  }
+};
+
 module.exports = {
   processDeposit,
   getAllOperations,
@@ -1211,5 +1240,6 @@ module.exports = {
   updateBankAccount,
   updateTradingAccount,
   updateUserPassport,
-  updateUserRole
+  updateUserRole,
+  getUserAccounts
 };

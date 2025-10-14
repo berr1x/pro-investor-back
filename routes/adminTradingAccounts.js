@@ -5,7 +5,8 @@ const {
   getAllTradingAccounts,
   createTradingAccount,
   updateTradingAccount,
-  toggleTradingAccountStatus
+  toggleTradingAccountStatus,
+  deleteTradingAccount
 } = require('../controllers/adminTradingAccountController');
 
 // Применяем middleware аутентификации ко всем маршрутам
@@ -22,5 +23,8 @@ router.put('/:accountId', updateTradingAccount);
 
 // Переключение статуса торгового счета
 router.put('/:accountId/status', toggleTradingAccountStatus);
+
+// Удаление торгового счета
+router.delete('/:accountId', deleteTradingAccount);
 
 module.exports = router;
