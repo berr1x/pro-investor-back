@@ -19,7 +19,7 @@ const processDeposit = async (req, res) => {
                 WHEN uta.id IS NOT NULL THEN uta.account_number
                 ELSE NULL
               END as account_number,
-              COALESCE(ua.balance, uta.profit) as current_balance,
+              COALESCE(ua.balance, uta.balance) as current_balance,
               u.first_name, u.last_name, u.email,
               CASE 
                 WHEN ua.id IS NOT NULL THEN 'banking'
@@ -68,16 +68,17 @@ const processDeposit = async (req, res) => {
         [newBalance.toFixed(2), operation.account_id]
       );
     } else if (operation.account_type === 'trading') {
-      // Для торговых счетов добавляем к deposit_amount
+      // Для торговых счетов добавляем к deposit_amount и balance
       const currentDepositAmount = await pool.query(
-        'SELECT deposit_amount FROM user_trading_accounts WHERE id = $1',
+        'SELECT deposit_amount, balance FROM user_trading_accounts WHERE id = $1',
         [operation.account_id]
       );
       const newDepositAmount = parseFloat(currentDepositAmount.rows[0].deposit_amount) + depositAmount;
+      const newBalance = parseFloat(currentDepositAmount.rows[0].balance) + depositAmount;
       
       await pool.query(
-        'UPDATE user_trading_accounts SET deposit_amount = $1, updated_at = NOW() WHERE id = $2',
-        [newDepositAmount.toFixed(2), operation.account_id]
+        'UPDATE user_trading_accounts SET deposit_amount = $1, balance = $2, updated_at = NOW() WHERE id = $3',
+        [newDepositAmount.toFixed(2), newBalance.toFixed(2), operation.account_id]
       );
     } else {
       await pool.query('ROLLBACK');
@@ -344,7 +345,7 @@ const getAdminStats = async (req, res) => {
     const tradingAccountsStats = await pool.query(`
       SELECT 
         COUNT(*) as trading_accounts,
-        COALESCE(SUM(profit), 0) as trading_balance
+        COALESCE(SUM(balance), 0) as trading_balance
       FROM user_trading_accounts
       WHERE status = 'active'
     `);
@@ -498,7 +499,7 @@ const getAllAccounts = async (req, res) => {
 
   try {
     let query = `
-      SELECT uta.id, uta.account_number, uta.profit as balance, uta.currency, uta.status as is_active, 
+      SELECT uta.id, uta.account_number, uta.balance, uta.currency, uta.status as is_active, 
              uta.percentage, uta.created_at, uta.updated_at,
              u.first_name, u.last_name, u.email,
              'trading' as account_type
@@ -624,11 +625,11 @@ const updateAccountBalance = async (req, res) => {
     }
 
     const account = currentAccount.rows[0];
-    const oldBalance = account.profit;
+    const oldBalance = account.balance;
 
-    // Обновляем баланс (profit для торговых счетов)
+    // Обновляем баланс (balance для торговых счетов)
     const result = await pool.query(
-      'UPDATE user_trading_accounts SET profit = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING *',
+      'UPDATE user_trading_accounts SET balance = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING *',
       [newBalance, accountId]
     );
 
@@ -909,6 +910,8 @@ const updateTradingAccount = async (req, res) => {
   const { 
     account_number, 
     profit, 
+    deposit_amount,
+    balance,
     percentage, 
     currency, 
     status 
@@ -942,6 +945,14 @@ const updateTradingAccount = async (req, res) => {
       return res.status(400).json({ message: 'Invalid profit. Must be a number' });
     }
 
+    if (deposit_amount !== undefined && (isNaN(parseFloat(deposit_amount)) || parseFloat(deposit_amount) < 0)) {
+      return res.status(400).json({ message: 'Invalid deposit amount. Must be a non-negative number' });
+    }
+
+    if (balance !== undefined && (isNaN(parseFloat(balance)) || parseFloat(balance) < 0)) {
+      return res.status(400).json({ message: 'Invalid balance. Must be a non-negative number' });
+    }
+
     if (percentage !== undefined && (isNaN(parseFloat(percentage)) || parseFloat(percentage) < 0)) {
       return res.status(400).json({ message: 'Invalid percentage. Must be a non-negative number' });
     }
@@ -959,13 +970,15 @@ const updateTradingAccount = async (req, res) => {
       `UPDATE user_trading_accounts 
        SET account_number = COALESCE($1, account_number),
            profit = COALESCE($2, profit),
-           percentage = COALESCE($3, percentage),
-           currency = COALESCE($4, currency),
-           status = COALESCE($5, status),
+           deposit_amount = COALESCE($3, deposit_amount),
+           balance = COALESCE($4, balance),
+           percentage = COALESCE($5, percentage),
+           currency = COALESCE($6, currency),
+           status = COALESCE($7, status),
            updated_at = NOW()
-       WHERE id = $6
+       WHERE id = $8
        RETURNING *`,
-      [account_number, profit, percentage, currency, status, accountId]
+      [account_number, profit, deposit_amount, balance, percentage, currency, status, accountId]
     );
 
     res.json({
@@ -1204,8 +1217,8 @@ const getUserAccounts = async (req, res) => {
     // Получаем только торговые счета пользователя
     const tradingAccountsResult = await pool.query(
       `SELECT id, account_number, currency, 
-              (COALESCE(deposit_amount, 0) + COALESCE(profit, 0)) as totalBalance,
-              deposit_amount, profit, status, 'trading' as type
+              COALESCE(balance, 0) as totalBalance,
+              deposit_amount, profit, balance, status, 'trading' as type
        FROM user_trading_accounts 
        WHERE userId = $1 AND status = 'active'
        ORDER BY created_at DESC`,
@@ -1220,6 +1233,77 @@ const getUserAccounts = async (req, res) => {
   } catch (error) {
     console.error('Get user accounts error:', error);
     res.status(500).json({ message: 'Failed to get user accounts' });
+  }
+};
+
+// Удаление операции
+const deleteOperation = async (req, res) => {
+  const { operationId } = req.params;
+
+  try {
+    // Получаем информацию об операции
+    const operationResult = await pool.query(
+      `SELECT o.id, o.operation_type, o.amount, o.currency, o.status, o.user_id, o.account_id,
+              CASE 
+                WHEN ua.id IS NOT NULL THEN 'banking'
+                WHEN uta.id IS NOT NULL THEN 'trading'
+                ELSE 'unknown'
+              END as account_type,
+              u.first_name, u.last_name, u.email
+       FROM operations o
+       LEFT JOIN user_accounts ua ON o.account_id = ua.id
+       LEFT JOIN user_trading_accounts uta ON o.account_id = uta.id
+       JOIN users u ON o.user_id = u.id
+       WHERE o.id = $1`,
+      [operationId]
+    );
+
+    if (operationResult.rows.length === 0) {
+      return res.status(404).json({ message: 'Operation not found' });
+    }
+
+    const operation = operationResult.rows[0];
+
+    // Проверяем, можно ли удалить операцию (теперь можно удалять все операции)
+    // Удаление завершенных операций требует особой осторожности
+
+    // Начинаем транзакцию
+    await pool.query('BEGIN');
+
+    try {
+
+
+      // Удаляем запись из истории операций
+      await pool.query('DELETE FROM operation_history WHERE operation_id = $1', [operationId]);
+
+      // Удаляем саму операцию
+      await pool.query('DELETE FROM operations WHERE id = $1', [operationId]);
+
+      await pool.query('COMMIT');
+
+      res.json({
+        message: 'Operation deleted successfully',
+        operation: {
+          id: operation.id,
+          type: operation.operation_type,
+          amount: operation.amount,
+          currency: operation.currency,
+          status: operation.status,
+          user: {
+            name: `${operation.first_name} ${operation.last_name}`,
+            email: operation.email
+          }
+        }
+      });
+
+    } catch (transactionError) {
+      await pool.query('ROLLBACK');
+      throw transactionError;
+    }
+
+  } catch (error) {
+    console.error('Delete operation error:', error);
+    res.status(500).json({ message: 'Failed to delete operation' });
   }
 };
 
@@ -1241,5 +1325,6 @@ module.exports = {
   updateTradingAccount,
   updateUserPassport,
   updateUserRole,
-  getUserAccounts
+  getUserAccounts,
+  deleteOperation
 };

@@ -14,18 +14,18 @@ const createTradingAccount = async (req, res) => {
         const { currency = 'USD' } = req.body;
         const userId = req.user.id;
 
-        // Проверяем, есть ли уже активный торговый счет с такой валютой
-        const existingAccount = await pool.query(
-            'SELECT * FROM user_trading_accounts WHERE userId = $1 AND currency = $2 AND status = $3',
-            [userId, currency, 'active']
-        );
+        // // Проверяем, есть ли уже активный торговый счет с такой валютой
+        // const existingAccount = await pool.query(
+        //     'SELECT * FROM user_trading_accounts WHERE userId = $1 AND currency = $2 AND status = $3',
+        //     [userId, currency, 'active']
+        // );
 
-        if (existingAccount.rows.length > 0) {
-            return res.status(400).json({
-                success: false,
-                message: `У вас уже есть активный торговый счет в валюте ${currency}`
-            });
-        }
+        // if (existingAccount.rows.length > 0) {
+        //     return res.status(400).json({
+        //         success: false,
+        //         message: `У вас уже есть активный торговый счет в валюте ${currency}`
+        //     });
+        // }
 
         // Генерируем уникальный номер счета
         let accountNumber;
@@ -53,7 +53,7 @@ const createTradingAccount = async (req, res) => {
 
         // Создаем торговый счет
         const result = await pool.query(
-            'INSERT INTO user_trading_accounts (userId, account_number, currency, profit, percentage) VALUES ($1, $2, $3, 0.00, 0.00) RETURNING *',
+            'INSERT INTO user_trading_accounts (userId, account_number, currency, profit, deposit_amount, balance, percentage) VALUES ($1, $2, $3, 0.00, 0.00, 0.00, 0.00) RETURNING *',
             [userId, accountNumber, currency]
         );
 
@@ -77,9 +77,9 @@ const getTradingAccounts = async (req, res) => {
     try {
         const userId = req.user.id;
 
-        // Получаем торговые счета с deposit_amount из таблицы
+        // Получаем торговые счета с deposit_amount и balance из таблицы
         const accounts = await pool.query(
-            'SELECT *, deposit_amount FROM user_trading_accounts WHERE userId = $1 ORDER BY created_at DESC',
+            'SELECT *, deposit_amount, balance FROM user_trading_accounts WHERE userId = $1 ORDER BY created_at DESC',
             [userId]
         );
 

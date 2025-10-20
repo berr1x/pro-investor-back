@@ -69,4 +69,7 @@ router.get('/users/:userId/accounts', adminController.getUserAccounts);
 // Создание операции от имени пользователя
 router.post('/operations/create', operationController.createUserOperation);
 
+// Удаление операции
+router.delete('/operations/:operationId', adminController.deleteOperation);
+
 module.exports = router;

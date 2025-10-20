@@ -144,7 +144,7 @@ const getAccountStats = async (req, res) => {
 
     // Общий баланс по торговым счетам
     const tradingBalanceResult = await pool.query(
-      'SELECT SUM(profit) as total_profit FROM user_trading_accounts WHERE userId = $1 AND status = $2',
+      'SELECT SUM(balance) as total_balance FROM user_trading_accounts WHERE userId = $1 AND status = $2',
       [userId, 'active']
     );
 
@@ -187,7 +187,7 @@ const getAccountStats = async (req, res) => {
         count: parseInt(bankAccountsCountResult.rows[0].accounts_count)
       },
       tradingAccounts: {
-        totalProfit: parseFloat(tradingBalanceResult.rows[0]?.total_profit || 0),
+        totalBalance: parseFloat(tradingBalanceResult.rows[0]?.total_balance || 0),
         count: parseInt(tradingAccountsCountResult.rows[0]?.accounts_count || 0)
       },
       operations: {

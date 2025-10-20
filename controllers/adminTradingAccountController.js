@@ -7,7 +7,7 @@ const getAllTradingAccounts = async (req, res) => {
 
   try {
     let query = `
-      SELECT uta.id, uta.account_number, uta.profit, uta.profit as balance, uta.deposit_amount, uta.currency, uta.status as is_active, 
+      SELECT uta.id, uta.account_number, uta.profit, uta.deposit_amount, uta.balance, uta.currency, uta.status as is_active, 
              uta.percentage, uta.created_at, uta.updated_at,
              u.first_name, u.last_name, u.email
       FROM user_trading_accounts uta
@@ -143,8 +143,8 @@ const createTradingAccount = async (req, res) => {
 
     // Создаем торговый счет
     const result = await pool.query(
-      `INSERT INTO user_trading_accounts (userId, account_number, currency, profit, deposit_amount, percentage, status)
-       VALUES ($1, $2, $3, 0.00, $4, $5, 'active')
+      `INSERT INTO user_trading_accounts (userId, account_number, currency, profit, deposit_amount, balance, percentage, status)
+       VALUES ($1, $2, $3, 0.00, $4, $4, $5, 'active')
        RETURNING *`,
       [userId, accountNumber, currency, parseFloat(deposit_amount), parseFloat(percentage)]
     );
@@ -163,7 +163,7 @@ const createTradingAccount = async (req, res) => {
 // Обновление торгового счета
 const updateTradingAccount = async (req, res) => {
   const { accountId } = req.params;
-  const { account_number, profit, deposit_amount, percentage, currency, status } = req.body;
+  const { account_number, profit, deposit_amount, balance, percentage, currency, status } = req.body;
 
   const client = await pool.connect();
 
@@ -174,6 +174,9 @@ const updateTradingAccount = async (req, res) => {
     }
     if (deposit_amount !== undefined && (isNaN(parseFloat(deposit_amount)) || parseFloat(deposit_amount) < 0)) {
       return res.status(400).json({ message: 'Invalid deposit amount. Must be a non-negative number.' });
+    }
+    if (balance !== undefined && (isNaN(parseFloat(balance)) || parseFloat(balance) < 0)) {
+      return res.status(400).json({ message: 'Invalid balance. Must be a non-negative number.' });
     }
     if (currency && !['RUB', 'USD', 'EUR', 'CNY'].includes(currency)) {
       return res.status(400).json({ message: 'Invalid currency. Must be RUB, USD, EUR, or CNY.' });
@@ -186,7 +189,7 @@ const updateTradingAccount = async (req, res) => {
 
     // Получаем текущие данные счета
     const currentAccountResult = await client.query(
-      'SELECT id, userId, account_number, profit, deposit_amount, currency FROM user_trading_accounts WHERE id = $1',
+      'SELECT id, userid, account_number, profit, deposit_amount, balance, currency FROM user_trading_accounts WHERE id = $1',
       [accountId]
     );
 
@@ -223,6 +226,18 @@ const updateTradingAccount = async (req, res) => {
     if (deposit_amount !== undefined) {
       updateFields.push(`deposit_amount = $${paramCount++}`);
       updateValues.push(parseFloat(deposit_amount));
+      
+      // Если balance не указан явно, обновляем его автоматически при изменении deposit_amount
+      if (balance === undefined) {
+        const depositDiff = parseFloat(deposit_amount) - oldDeposit;
+        const newBalance = parseFloat(currentAccount.balance || 0) + depositDiff;
+        updateFields.push(`balance = $${paramCount++}`);
+        updateValues.push(newBalance);
+      }
+    }
+    if (balance !== undefined) {
+      updateFields.push(`balance = $${paramCount++}`);
+      updateValues.push(parseFloat(balance));
     }
     if (percentage !== undefined) {
       updateFields.push(`percentage = $${paramCount++}`);
@@ -274,7 +289,7 @@ const updateTradingAccount = async (req, res) => {
         const operationAmount = Math.abs(profitDiff);
         
         operations.push({
-          user_id: currentAccount.userId,
+          user_id: currentAccount.userid,
           account_id: accountId,
           operation_type: operationType,
           amount: operationAmount,
@@ -294,12 +309,35 @@ const updateTradingAccount = async (req, res) => {
         const operationAmount = Math.abs(depositDiff);
         
         operations.push({
-          user_id: currentAccount.userId,
+          user_id: currentAccount.userid,
           account_id: accountId,
           operation_type: operationType,
           amount: operationAmount,
           currency: updatedAccount.currency,
           comment: `Корректировка депозита администратором. ${depositDiff > 0 ? 'Начислено' : 'Списано'}: ${operationAmount} ${updatedAccount.currency}`,
+          recipient_details: JSON.stringify({}),
+          status: 'completed'
+        });
+      }
+    }
+
+    // Операция для изменения баланса (только если balance изменяется независимо от deposit_amount)
+    if (balance !== undefined && deposit_amount === undefined) {
+      const oldBalance = parseFloat(currentAccount.balance || 0);
+      const newBalance = parseFloat(balance);
+      const balanceDiff = newBalance - oldBalance;
+      
+      if (balanceDiff !== 0) {
+        const operationType = balanceDiff > 0 ? 'deposit' : 'withdrawal';
+        const operationAmount = Math.abs(balanceDiff);
+        
+        operations.push({
+          user_id: currentAccount.userid,
+          account_id: accountId,
+          operation_type: operationType,
+          amount: operationAmount,
+          currency: updatedAccount.currency,
+          comment: `Корректировка баланса администратором. ${balanceDiff > 0 ? 'Начислено' : 'Списано'}: ${operationAmount} ${updatedAccount.currency}`,
           recipient_details: JSON.stringify({}),
           status: 'completed'
         });

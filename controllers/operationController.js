@@ -136,7 +136,7 @@ const createWithdrawal = async (req, res) => {
 
     // Получаем торговый счет пользователя по номеру
     const tradingAccountResult = await pool.query(
-      'SELECT id, account_number, currency, status, profit, deposit_amount FROM user_trading_accounts WHERE userId = $1 AND account_number = $2 AND status = $3',
+      'SELECT id, account_number, currency, status, profit, deposit_amount, balance FROM user_trading_accounts WHERE userId = $1 AND account_number = $2 AND status = $3',
       [userId, recipientDetails.accountNumber, 'active']
     );
 
@@ -145,15 +145,13 @@ const createWithdrawal = async (req, res) => {
     }
 
     const tradingAccount = tradingAccountResult.rows[0];
-    const currentProfit = parseFloat(tradingAccount.profit || 0);
-    const currentDeposit = parseFloat(tradingAccount.deposit_amount || 0);
-    const totalBalance = currentDeposit + currentProfit;
+    const currentBalance = parseFloat(tradingAccount.balance || 0);
 
-    // Проверяем достаточность средств на торговом счете (проверяем полный баланс)
-    if (totalBalance < parseFloat(amount)) {
+    // Проверяем достаточность средств на торговом счете (проверяем balance)
+    if (currentBalance < parseFloat(amount)) {
       return res.status(400).json({ 
         message: 'Insufficient funds', 
-        currentBalance: totalBalance,
+        currentBalance: currentBalance,
         requestedAmount: amount 
       });
     }
@@ -174,24 +172,13 @@ const createWithdrawal = async (req, res) => {
 
       const operation = operationResult.rows[0];
 
-      // Отнимаем сумму вывода из полного баланса торгового счета
+      // Отнимаем сумму вывода только из balance (deposit_amount и profit остаются нетронутыми)
       const withdrawalAmount = parseFloat(amount);
-      let newProfit = currentProfit;
-      let newDeposit = currentDeposit;
-      
-      // Сначала списываем из profit, если его недостаточно - списываем из deposit
-      if (withdrawalAmount <= currentProfit) {
-        newProfit = currentProfit - withdrawalAmount;
-      } else {
-        // Списываем весь profit и остаток из deposit
-        const remainingAmount = withdrawalAmount - currentProfit;
-        newProfit = 0;
-        newDeposit = currentDeposit - remainingAmount;
-      }
+      const newBalance = currentBalance - withdrawalAmount;
       
       await client.query(
-        'UPDATE user_trading_accounts SET profit = $1, deposit_amount = $2, updated_at = NOW() WHERE id = $3',
-        [newProfit.toFixed(2), newDeposit.toFixed(2), tradingAccount.id]
+        'UPDATE user_trading_accounts SET balance = $1, updated_at = NOW() WHERE id = $2',
+        [newBalance.toFixed(2), tradingAccount.id]
       );
 
       await client.query('COMMIT');
@@ -411,7 +398,7 @@ const createUserOperation = async (req, res) => {
     
     // Сначала проверяем торговые счета
     accountResult = await pool.query(
-      'SELECT id, account_number, currency, status, profit, deposit_amount FROM user_trading_accounts WHERE id = $1 AND userId = $2',
+      'SELECT id, account_number, currency, status, profit, deposit_amount, balance FROM user_trading_accounts WHERE id = $1 AND userId = $2',
       [accountId, userId]
     );
     
@@ -437,7 +424,7 @@ const createUserOperation = async (req, res) => {
     if (operationType === 'withdrawal') {
       let currentBalance;
       if (accountType === 'trading') {
-        currentBalance = parseFloat(account.deposit_amount || 0) + parseFloat(account.profit || 0);
+        currentBalance = parseFloat(account.balance || 0);
       } else {
         currentBalance = parseFloat(account.balance || 0);
       }
@@ -471,11 +458,12 @@ const createUserOperation = async (req, res) => {
       if (operationStatus === 'completed') {
         if (operationType === 'deposit') {
           if (accountType === 'trading') {
-            // Для торговых счетов добавляем к deposit_amount
+            // Для торговых счетов добавляем к deposit_amount и balance
             const newDepositAmount = parseFloat(account.deposit_amount || 0) + parseFloat(amount);
+            const newBalance = parseFloat(account.balance || 0) + parseFloat(amount);
             await client.query(
-              'UPDATE user_trading_accounts SET deposit_amount = $1, updated_at = NOW() WHERE id = $2',
-              [newDepositAmount.toFixed(2), accountId]
+              'UPDATE user_trading_accounts SET deposit_amount = $1, balance = $2, updated_at = NOW() WHERE id = $3',
+              [newDepositAmount.toFixed(2), newBalance.toFixed(2), accountId]
             );
           } else {
             // Для банковских счетов добавляем к balance
@@ -487,25 +475,13 @@ const createUserOperation = async (req, res) => {
           }
         } else if (operationType === 'withdrawal') {
           if (accountType === 'trading') {
-            // Для торговых счетов списываем из полного баланса
+            // Для торговых счетов списываем только из balance (deposit_amount и profit остаются нетронутыми)
             const withdrawalAmount = parseFloat(amount);
-            const currentProfit = parseFloat(account.profit || 0);
-            const currentDeposit = parseFloat(account.deposit_amount || 0);
-            
-            let newProfit = currentProfit;
-            let newDeposit = currentDeposit;
-            
-            if (withdrawalAmount <= currentProfit) {
-              newProfit = currentProfit - withdrawalAmount;
-            } else {
-              const remainingAmount = withdrawalAmount - currentProfit;
-              newProfit = 0;
-              newDeposit = currentDeposit - remainingAmount;
-            }
+            const newBalance = parseFloat(account.balance || 0) - withdrawalAmount;
             
             await client.query(
-              'UPDATE user_trading_accounts SET profit = $1, deposit_amount = $2, updated_at = NOW() WHERE id = $3',
-              [newProfit.toFixed(2), newDeposit.toFixed(2), accountId]
+              'UPDATE user_trading_accounts SET balance = $1, updated_at = NOW() WHERE id = $2',
+              [newBalance.toFixed(2), accountId]
             );
           } else {
             // Для банковских счетов списываем из balance
