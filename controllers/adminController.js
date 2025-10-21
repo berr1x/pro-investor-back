@@ -1307,6 +1307,234 @@ const deleteOperation = async (req, res) => {
   }
 };
 
+// Создание пользователя администратором
+const createUser = async (req, res) => {
+  const { email, phone, password, firstName, lastName, middleName } = req.body;
+
+  try {
+    // Валидация обязательных полей
+    if (!email || !password) {
+      return res.status(400).json({ 
+        message: 'Email and password are required' 
+      });
+    }
+
+    // Валидация email
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({ 
+        message: 'Invalid email format' 
+      });
+    }
+
+    // Валидация пароля
+    if (password.length < 8) {
+      return res.status(400).json({ 
+        message: 'Password must be at least 8 characters long' 
+      });
+    }
+
+    // Проверяем, существует ли пользователь с таким email
+    const existingUser = await pool.query(
+      'SELECT id FROM users WHERE email = $1',
+      [email]
+    );
+
+    if (existingUser.rows.length > 0) {
+      return res.status(400).json({ 
+        message: 'User with this email already exists' 
+      });
+    }
+
+    // Хешируем пароль
+    const bcrypt = require('bcryptjs');
+    const saltRounds = 12;
+    const passwordHash = await bcrypt.hash(password, saltRounds);
+
+    // Создаем пользователя
+    const result = await pool.query(
+      `INSERT INTO users (email, password_hash, first_name, last_name, middle_name, phone, auth_method, is_active, is_verified)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       RETURNING id, email, first_name, last_name, middle_name, phone, is_active, is_verified, created_at`,
+      [email, passwordHash, firstName || '', lastName || '', middleName || null, phone || null, 'password', true, false]
+    );
+
+    const user = result.rows[0];
+
+    res.status(201).json({
+      message: 'User created successfully',
+      user: {
+        id: user.id,
+        email: user.email,
+        firstName: user.first_name,
+        lastName: user.last_name,
+        middleName: user.middle_name,
+        phone: user.phone,
+        isActive: user.is_active,
+        isVerified: user.is_verified,
+        createdAt: user.created_at
+      }
+    });
+
+  } catch (error) {
+    console.error('Create user error:', error);
+    res.status(500).json({ message: 'Failed to create user' });
+  }
+};
+
+// Получение списка пользователей для выпадающего списка
+const getUsersList = async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT id, first_name, last_name, middle_name, email 
+       FROM users 
+       WHERE is_active = true 
+       ORDER BY first_name, last_name`,
+      []
+    );
+
+    const users = result.rows.map(user => ({
+      id: user.id,
+      name: `${user.first_name} ${user.last_name}`.trim(),
+      email: user.email,
+      fullName: `${user.first_name} ${user.last_name} ${user.middle_name || ''}`.trim()
+    }));
+
+    res.json({
+      users
+    });
+
+  } catch (error) {
+    console.error('Get users list error:', error);
+    res.status(500).json({ message: 'Failed to get users list' });
+  }
+};
+
+// Смена пароля пользователя администратором
+const changeUserPassword = async (req, res) => {
+  const { userId } = req.params;
+  const { newPassword } = req.body;
+
+  try {
+    // Валидация пароля
+    if (!newPassword || newPassword.length < 8) {
+      return res.status(400).json({ 
+        message: 'Password must be at least 8 characters long' 
+      });
+    }
+
+    // Проверяем, существует ли пользователь
+    const userResult = await pool.query(
+      'SELECT id, email, first_name, last_name FROM users WHERE id = $1',
+      [userId]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Хешируем новый пароль
+    const bcrypt = require('bcryptjs');
+    const saltRounds = 12;
+    const passwordHash = await bcrypt.hash(newPassword, saltRounds);
+
+    // Обновляем пароль
+    await pool.query(
+      'UPDATE users SET password_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+      [passwordHash, userId]
+    );
+
+    const user = userResult.rows[0];
+
+    res.json({
+      message: 'Password changed successfully',
+      user: {
+        id: user.id,
+        email: user.email,
+        name: `${user.first_name} ${user.last_name}`
+      }
+    });
+
+  } catch (error) {
+    console.error('Change user password error:', error);
+    res.status(500).json({ message: 'Failed to change user password' });
+  }
+};
+
+// Удаление пользователя
+const deleteUser = async (req, res) => {
+  const { userId } = req.params;
+
+  try {
+    // Проверяем, существует ли пользователь
+    const userResult = await pool.query(
+      'SELECT id, email, first_name, last_name FROM users WHERE id = $1',
+      [userId]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    const user = userResult.rows[0];
+
+    // Начинаем транзакцию
+    await pool.query('BEGIN');
+
+    try {
+      // Удаляем все связанные данные пользователя
+      // 1. Удаляем операции пользователя
+      await pool.query('DELETE FROM operations WHERE user_id = $1', [userId]);
+      
+      // 2. Удаляем банковские счета пользователя
+      await pool.query('DELETE FROM user_accounts WHERE user_id = $1', [userId]);
+      
+      // 3. Удаляем торговые счета пользователя (если есть таблица)
+      await pool.query('DELETE FROM user_trading_accounts WHERE userid = $1', [userId]);
+      
+      // 4. Удаляем паспортные данные пользователя
+      await pool.query('DELETE FROM user_passports WHERE user_id = $1', [userId]);
+      
+      // 5. Удаляем документы пользователя
+      await pool.query('DELETE FROM user_documents WHERE user_id = $1', [userId]);
+      
+      // 6. Удаляем токены восстановления пароля
+      await pool.query('DELETE FROM password_reset_tokens WHERE user_id = $1', [userId]);
+      
+      // 7. Удаляем сессии пользователя
+      await pool.query('DELETE FROM user_sessions WHERE user_id = $1', [userId]);
+      
+      // 8. Удаляем историю операций (если есть связанные операции)
+      await pool.query(
+        'DELETE FROM operation_history WHERE operation_id IN (SELECT id FROM operations WHERE user_id = $1)',
+        [userId]
+      );
+      
+      // 9. Удаляем самого пользователя
+      await pool.query('DELETE FROM users WHERE id = $1', [userId]);
+
+      await pool.query('COMMIT');
+
+      res.json({
+        message: 'User and all related data deleted successfully',
+        deletedUser: {
+          id: user.id,
+          email: user.email,
+          name: `${user.first_name} ${user.last_name}`
+        }
+      });
+
+    } catch (transactionError) {
+      await pool.query('ROLLBACK');
+      throw transactionError;
+    }
+
+  } catch (error) {
+    console.error('Delete user error:', error);
+    res.status(500).json({ message: 'Failed to delete user' });
+  }
+};
+
 module.exports = {
   processDeposit,
   getAllOperations,
@@ -1314,6 +1542,10 @@ module.exports = {
   updateOperation,
   getAdminStats,
   getAllUsers,
+  createUser,
+  getUsersList,
+  changeUserPassword,
+  deleteUser,
   toggleUserStatus,
   getAllAccounts,
   toggleAccountStatus,

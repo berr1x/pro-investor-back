@@ -24,6 +24,9 @@ router.get('/stats', adminController.getAdminStats);
 // Получение всех пользователей
 router.get('/users', adminController.getAllUsers);
 
+// Получение списка пользователей для выпадающего списка
+router.get('/users/list', adminController.getUsersList);
+
 // Блокировка/разблокировка пользователя
 router.put('/users/:userId/status', adminController.toggleUserStatus);
 
@@ -71,5 +74,14 @@ router.post('/operations/create', operationController.createUserOperation);
 
 // Удаление операции
 router.delete('/operations/:operationId', adminController.deleteOperation);
+
+// Создание пользователя
+router.post('/users', adminController.createUser);
+
+// Смена пароля пользователя
+router.put('/users/:userId/password', adminController.changeUserPassword);
+
+// Удаление пользователя
+router.delete('/users/:userId', adminController.deleteUser);
 
 module.exports = router;
