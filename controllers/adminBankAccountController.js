@@ -111,7 +111,66 @@ const toggleBankAccountStatus = async (req, res) => {
   }
 };
 
+// Удаление банковского счета
+const deleteBankAccount = async (req, res) => {
+  const { accountId } = req.params;
+
+  if (!accountId) {
+    return res.status(400).json({ message: 'Account ID is required' });
+  }
+
+  const client = await pool.connect();
+
+  try {
+    await client.query('BEGIN');
+
+    // Проверяем, существует ли счет
+    const accountResult = await client.query(
+      'SELECT id, account_number, user_id FROM user_accounts WHERE id = $1',
+      [accountId]
+    );
+
+    if (accountResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: 'Bank account not found' });
+    }
+
+    const account = accountResult.rows[0];
+
+    // Удаляем все операции, связанные с этим счетом
+    await client.query(
+      'DELETE FROM operations WHERE account_id = $1',
+      [accountId]
+    );
+
+    // Удаляем сам банковский счет
+    await client.query(
+      'DELETE FROM user_accounts WHERE id = $1',
+      [accountId]
+    );
+
+    await client.query('COMMIT');
+
+    res.json({
+      message: 'Bank account and all related operations deleted successfully',
+      deletedAccount: {
+        id: account.id,
+        account_number: account.account_number,
+        user_id: account.user_id
+      }
+    });
+
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Delete bank account error:', error);
+    res.status(500).json({ message: 'Failed to delete bank account' });
+  } finally {
+    client.release();
+  }
+};
+
 module.exports = {
   getAllBankAccounts,
-  toggleBankAccountStatus
+  toggleBankAccountStatus,
+  deleteBankAccount
 };
