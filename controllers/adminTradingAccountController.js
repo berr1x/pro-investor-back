@@ -8,7 +8,7 @@ const getAllTradingAccounts = async (req, res) => {
   try {
     let query = `
       SELECT uta.id, uta.account_number, uta.profit, uta.deposit_amount, uta.balance, uta.currency, uta.status as is_active, 
-             uta.percentage, uta.created_at, uta.updated_at,
+             uta.percentage, uta.created_at, uta.updated_at, uta.date,
              u.first_name, u.last_name, u.email
       FROM user_trading_accounts uta
       JOIN users u ON uta.userId = u.id
@@ -163,7 +163,7 @@ const createTradingAccount = async (req, res) => {
 // Обновление торгового счета
 const updateTradingAccount = async (req, res) => {
   const { accountId } = req.params;
-  const { account_number, profit, deposit_amount, balance, percentage, currency, status } = req.body;
+  const { account_number, profit, deposit_amount, balance, percentage, currency, status, date } = req.body;
 
   const client = await pool.connect();
 
@@ -250,6 +250,10 @@ const updateTradingAccount = async (req, res) => {
     if (status !== undefined) {
       updateFields.push(`status = $${paramCount++}`);
       updateValues.push(status);
+    }
+    if (date !== undefined) {
+      updateFields.push(`date = $${paramCount++}`);
+      updateValues.push(date);
     }
 
     if (updateFields.length === 0) {
