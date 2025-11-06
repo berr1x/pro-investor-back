@@ -362,7 +362,7 @@ const getOperation = async (req, res) => {
 
 // Создание операции от имени пользователя (для админки)
 const createUserOperation = async (req, res) => {
-  const { userId, operationType, accountId, amount, currency, comment, recipientDetails, status } = req.body;
+  const { userId, operationType, accountId, amount, currency, comment, recipientDetails, status, contactMethod, created_at } = req.body;
 
   try {
     // Валидация данных
@@ -446,10 +446,21 @@ const createUserOperation = async (req, res) => {
 
       // Создаем операцию
       const operationResult = await client.query(
-        `INSERT INTO operations (user_id, account_id, operation_type, amount, currency, comment, recipient_details, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        `INSERT INTO operations (user_id, account_id, operation_type, amount, currency, comment, recipient_details, status, contact_method, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10::timestamptz, CURRENT_TIMESTAMP))
          RETURNING *`,
-        [userId, accountId, operationType, parseFloat(amount), currency || account.currency, comment || `Operation created by admin`, JSON.stringify(recipientDetails || {}), operationStatus]
+        [
+          userId,
+          accountId,
+          operationType,
+          parseFloat(amount),
+          currency || account.currency,
+          comment || `Operation created by admin`,
+          JSON.stringify(recipientDetails || {}),
+          operationStatus,
+          contactMethod || null,
+          created_at || null
+        ]
       );
 
       const operation = operationResult.rows[0];

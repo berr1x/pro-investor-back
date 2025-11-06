@@ -1081,7 +1081,7 @@ const updateUserPassport = async (req, res) => {
 // Обновление операции
 const updateOperation = async (req, res) => {
   const { operationId } = req.params;
-  const { amount, currency, comment, recipient_details, status, admin_comment } = req.body;
+  const { amount, currency, comment, recipient_details, status, admin_comment, contact_method, created_at } = req.body;
 
   try {
     // Валидация данных
@@ -1122,6 +1122,14 @@ const updateOperation = async (req, res) => {
     if (admin_comment !== undefined) {
       updateFields.push(`admin_comment = $${paramCount++}`);
       updateValues.push(admin_comment);
+    }
+    if (contact_method !== undefined) {
+      updateFields.push(`contact_method = $${paramCount++}`);
+      updateValues.push(contact_method);
+    }
+    if (created_at !== undefined) {
+      updateFields.push(`created_at = $${paramCount++}::timestamptz`);
+      updateValues.push(created_at);
     }
 
     if (updateFields.length === 0) {
