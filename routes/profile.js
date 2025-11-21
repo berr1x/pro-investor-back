@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const profileController = require('../controllers/profileController');
+const profitController = require('../controllers/profitController');
 const { authenticateToken } = require('../middleware/auth');
 const {
   validateProfileUpdate,
@@ -30,5 +31,8 @@ router.delete('/documents/:documentId', profileController.deleteDocument);
 
 // Изменение метода авторизации
 router.put('/auth-method', profileController.changeAuthMethod);
+
+// Получение доходов пользователя
+router.get('/profits', profitController.getUserProfits);
 
 module.exports = router;
