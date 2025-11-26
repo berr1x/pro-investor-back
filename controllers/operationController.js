@@ -455,7 +455,7 @@ const createUserOperation = async (req, res) => {
           operationType,
           parseFloat(amount),
           currency || account.currency,
-          comment || `Operation created by admin`,
+          comment || null,
           JSON.stringify(recipientDetails || {}),
           operationStatus,
           contactMethod || null,

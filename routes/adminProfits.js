@@ -13,6 +13,9 @@ router.get('/', profitController.getAllProfits);
 // Создание дохода
 router.post('/', profitController.createProfit);
 
+// Обновление дохода
+router.put('/:profitId', profitController.updateProfit);
+
 // Удаление дохода
 router.delete('/:profitId', profitController.deleteProfit);
 

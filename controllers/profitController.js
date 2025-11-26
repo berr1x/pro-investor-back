@@ -145,6 +145,156 @@ const createProfit = async (req, res) => {
   }
 };
 
+// Обновление дохода
+const updateProfit = async (req, res) => {
+  const { profitId } = req.params;
+  const { userId, account_number, from_date, to_date, amount, percentage } = req.body;
+
+  try {
+    // Проверяем, существует ли доход
+    const profitResult = await pool.query('SELECT id FROM profit WHERE id = $1', [profitId]);
+    if (profitResult.rows.length === 0) {
+      return res.status(404).json({ message: 'Profit not found' });
+    }
+
+    // Валидация данных
+    if (userId !== undefined && (isNaN(parseInt(userId)) || parseInt(userId) <= 0)) {
+      return res.status(400).json({ message: 'Invalid userId' });
+    }
+
+    if (amount !== undefined && (isNaN(parseFloat(amount)) || parseFloat(amount) < 0)) {
+      return res.status(400).json({ message: 'Invalid amount. Must be a non-negative number' });
+    }
+
+    if (percentage !== undefined && (isNaN(parseFloat(percentage)) || parseFloat(percentage) < 0 || parseFloat(percentage) > 100)) {
+      return res.status(400).json({ message: 'Invalid percentage. Must be between 0 and 100' });
+    }
+
+    // Если указан userId, проверяем его существование
+    if (userId !== undefined) {
+      const userResult = await pool.query('SELECT id FROM users WHERE id = $1', [userId]);
+      if (userResult.rows.length === 0) {
+        return res.status(404).json({ message: 'User not found' });
+      }
+    }
+
+    // Если указан account_number и userId, проверяем существование торгового счета
+    if (account_number !== undefined && userId !== undefined) {
+      const accountResult = await pool.query(
+        'SELECT id, account_number FROM user_trading_accounts WHERE userId = $1 AND account_number = $2',
+        [userId, account_number]
+      );
+      if (accountResult.rows.length === 0) {
+        return res.status(404).json({ message: 'Trading account not found for this user' });
+      }
+    }
+
+    // Проверяем корректность дат, если они указаны
+    let formattedFromDate = from_date;
+    let formattedToDate = to_date;
+
+    if (from_date !== undefined || to_date !== undefined) {
+      const fromDate = from_date ? new Date(from_date) : null;
+      const toDate = to_date ? new Date(to_date) : null;
+
+      if (from_date && isNaN(fromDate.getTime())) {
+        return res.status(400).json({ message: 'Invalid from_date format' });
+      }
+
+      if (to_date && isNaN(toDate.getTime())) {
+        return res.status(400).json({ message: 'Invalid to_date format' });
+      }
+
+      if (fromDate && toDate && fromDate > toDate) {
+        return res.status(400).json({ message: 'from_date cannot be later than to_date' });
+      }
+
+      // Преобразуем даты в формат DD.MM.YYYY, если они указаны
+      const formatDateToDDMMYYYY = (dateString) => {
+        const date = new Date(dateString);
+        const day = String(date.getDate()).padStart(2, '0');
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const year = date.getFullYear();
+        return `${day}.${month}.${year}`;
+      };
+
+      if (from_date) {
+        formattedFromDate = formatDateToDDMMYYYY(from_date);
+      }
+
+      if (to_date) {
+        formattedToDate = formatDateToDDMMYYYY(to_date);
+      }
+    }
+
+    // Формируем запрос на обновление
+    const updateFields = [];
+    const updateValues = [];
+    let paramCount = 0;
+
+    if (userId !== undefined) {
+      paramCount++;
+      updateFields.push(`"userId" = $${paramCount}`);
+      updateValues.push(userId);
+    }
+
+    if (account_number !== undefined) {
+      paramCount++;
+      updateFields.push(`account_number = $${paramCount}`);
+      updateValues.push(account_number);
+    }
+
+    if (from_date !== undefined) {
+      paramCount++;
+      updateFields.push(`from_date = $${paramCount}`);
+      updateValues.push(formattedFromDate);
+    }
+
+    if (to_date !== undefined) {
+      paramCount++;
+      updateFields.push(`to_date = $${paramCount}`);
+      updateValues.push(formattedToDate);
+    }
+
+    if (amount !== undefined) {
+      paramCount++;
+      updateFields.push(`amount = $${paramCount}`);
+      updateValues.push(parseFloat(amount));
+    }
+
+    if (percentage !== undefined) {
+      paramCount++;
+      updateFields.push(`percentage = $${paramCount}`);
+      updateValues.push(parseFloat(percentage));
+    }
+
+    if (updateFields.length === 0) {
+      return res.status(400).json({ message: 'No fields to update' });
+    }
+
+    paramCount++;
+    updateValues.push(profitId);
+
+    const query = `
+      UPDATE profit 
+      SET ${updateFields.join(', ')}
+      WHERE id = $${paramCount}
+      RETURNING *
+    `;
+
+    const result = await pool.query(query, updateValues);
+
+    res.json({
+      message: 'Profit updated successfully',
+      profit: result.rows[0]
+    });
+
+  } catch (error) {
+    console.error('Update profit error:', error);
+    res.status(500).json({ message: 'Failed to update profit' });
+  }
+};
+
 // Удаление дохода
 const deleteProfit = async (req, res) => {
   const { profitId } = req.params;
@@ -197,6 +347,7 @@ const getUserProfits = async (req, res) => {
 module.exports = {
   getAllProfits,
   createProfit,
+  updateProfit,
   deleteProfit,
   getUserProfits
 };
